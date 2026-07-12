@@ -389,7 +389,7 @@ function toTitleCaseWords(value: string): string {
   return parts.join(" ");
 }
 
-function claudeSubscriptionLabel(subscriptionType: string | undefined): string | undefined {
+export function claudeSubscriptionLabel(subscriptionType: string | undefined): string | undefined {
   const normalized = subscriptionType?.toLowerCase().replace(/[\s_-]+/g, "");
   if (!normalized) return undefined;
 

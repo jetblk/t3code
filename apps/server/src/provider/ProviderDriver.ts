@@ -33,6 +33,7 @@ import type * as Scope from "effect/Scope";
 import type * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import type { ProviderAdapterError, ProviderDriverError } from "./Errors.ts";
 import type { ProviderAdapterShape } from "./Services/ProviderAdapter.ts";
+import type { ProviderUsageShape } from "./Services/ProviderUsage.ts";
 import type { ServerProviderShape } from "./Services/ServerProvider.ts";
 
 /**
@@ -71,6 +72,12 @@ export interface ProviderInstance {
   readonly snapshot: ServerProviderShape;
   readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
   readonly textGeneration: TextGeneration.TextGeneration["Service"];
+  /**
+   * Optional account-usage capability. Absent when the driver cannot report
+   * subscription usage — the usage service surfaces those instances as
+   * `status: "unsupported"`.
+   */
+  readonly usage?: ProviderUsageShape;
 }
 
 export interface ProviderContinuationIdentity {
