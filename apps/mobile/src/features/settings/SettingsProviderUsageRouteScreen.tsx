@@ -33,7 +33,7 @@ export function SettingsProviderUsageRouteScreen() {
 
   const [results, setResults] = useState<Record<string, EnvironmentUsageInput>>({});
   const [refreshNonce, setRefreshNonce] = useState(0);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
 
   const handleResult = useCallback((next: EnvironmentUsageInput) => {
     setResults((prev) => {
@@ -69,26 +69,29 @@ export function SettingsProviderUsageRouteScreen() {
     return aggregateProviderUsage(inputs);
   }, [results, sortedEnvironments]);
 
-  const anyPending = useMemo(
-    () => sortedEnvironments.some((environment) => results[environment.environmentId]?.isPending),
-    [results, sortedEnvironments],
-  );
-
-  useEffect(() => {
-    if (isRefreshing && !anyPending) setIsRefreshing(false);
-  }, [isRefreshing, anyPending]);
-
   const handleRefresh = useCallback(() => {
-    setIsRefreshing(true);
     setRefreshNonce((value) => value + 1);
   }, []);
+
+  // Deterministic pull-to-refresh spinner. The usage atoms are stale-while-
+  // revalidate, so their `waiting` flag never cleanly settles (it lingers
+  // through background revalidation across environments) — driving the
+  // RefreshControl off it leaves the spinner stuck. Instead show it for a
+  // bounded window each pull and let cards update as environments resolve.
+  // Matches the isPullRefreshing pattern in GitOverviewSheet.
+  useEffect(() => {
+    if (refreshNonce === 0) return;
+    setIsPullRefreshing(true);
+    const timeout = setTimeout(() => setIsPullRefreshing(false), 1000);
+    return () => clearTimeout(timeout);
+  }, [refreshNonce]);
 
   const nowMs = Date.now();
   const hasContent =
     aggregate.cards.length > 0 ||
     aggregate.pendingNodes.length > 0 ||
     aggregate.failedNodes.length > 0;
-  const isInitialLoading = isReady && !hasContent && (anyPending || sortedEnvironments.length > 0);
+  const isInitialLoading = isReady && !hasContent && sortedEnvironments.length > 0;
 
   return (
     <View collapsable={false} className="flex-1 bg-sheet">
@@ -111,7 +114,7 @@ export function SettingsProviderUsageRouteScreen() {
         contentContainerClassName="gap-6 px-5 pt-4 pb-[18px]"
         refreshControl={
           <RefreshControl
-            refreshing={isRefreshing}
+            refreshing={isPullRefreshing}
             onRefresh={handleRefresh}
             tintColor={mutedColor}
           />
