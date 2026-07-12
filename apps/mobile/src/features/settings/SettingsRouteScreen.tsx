@@ -107,6 +107,11 @@ function LocalSettingsRouteScreen() {
             value={`${environmentCount}`}
             target="SettingsEnvironments"
           />
+          <SettingsRow
+            icon="gauge.with.needle"
+            label="Usage & Limits"
+            target="SettingsProviderUsage"
+          />
         </SettingsSection>
 
         <SettingsSection title="Appearance">
@@ -454,6 +459,11 @@ function ConfiguredSettingsRouteScreen() {
             label="Environments"
             value={`${environmentCount}`}
             target="SettingsEnvironments"
+          />
+          <SettingsRow
+            icon="gauge.with.needle"
+            label="Usage & Limits"
+            target="SettingsProviderUsage"
           />
           <SettingsSwitchRow
             icon="bell.badge"
