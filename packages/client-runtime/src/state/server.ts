@@ -298,6 +298,15 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:process-resource-history",
       tag: WS_METHODS.serverGetProcessResourceHistory,
     }),
+    // Usage is volatile and refreshed on demand (pull-to-refresh); a short
+    // stale time keeps the meters current while the server's own 60s cache
+    // bounds upstream provider traffic. Idle-evict after 5min offscreen.
+    providerUsage: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:provider-usage",
+      tag: WS_METHODS.serverGetProviderUsage,
+      staleTimeMs: 30_000,
+      idleTtlMs: 5 * 60_000,
+    }),
     configProjection,
     welcome: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:welcome",
