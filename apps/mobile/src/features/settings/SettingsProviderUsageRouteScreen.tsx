@@ -1,7 +1,7 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import { SymbolView } from "expo-symbols";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, RefreshControl, ScrollView, useColorScheme, View } from "react-native";
+import { ActivityIndicator, RefreshControl, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText as Text } from "../../components/AppText";
@@ -337,17 +337,14 @@ function UsageWindowRow(props: {
 
 /**
  * A slim "% consumed" meter. The fill grows toward the limit and steps
- * green → amber → red as the window is exhausted. There's no amber theme token
- * yet, so the warning tint is a self-contained light/dark pair — the spot to
- * swap in a `--color-warning` token if one is added.
+ * green → amber → red as the window is exhausted.
  */
 function UsageMeter(props: { readonly usedPercent: number }) {
-  const isDark = useColorScheme() === "dark";
   const trackColor = useThemeColor("--color-subtle");
   const okColor = useThemeColor("--color-switch-active");
+  const warningColor = useThemeColor("--color-warning");
   const dangerColor = useThemeColor("--color-danger-foreground");
   const used = Math.max(0, Math.min(100, props.usedPercent));
-  const warningColor = isDark ? "#fbbf24" : "#f59e0b";
   const fillColor = used >= 95 ? dangerColor : used >= 75 ? warningColor : okColor;
 
   return (
