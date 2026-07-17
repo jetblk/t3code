@@ -48,6 +48,8 @@ jobs:
               # scripts/update-release-package-versions.ts imports
               # @effect/platform-node, which only @t3tools/scripts pulls in.
               - --filter=@t3tools/scripts...
+              # The server serves the web client from dist/client.
+              - --filter=@t3tools/web...
 
       - id: version
         name: Resolve fork version
@@ -84,8 +86,25 @@ jobs:
             src/provider/Layers/CodexUsage.test.ts \
             src/provider/Layers/ProviderUsageService.test.ts
 
+      - name: Build web client
+        run: vp run --filter @t3tools/web build
+
       - name: Build server bundle
         run: vp run --filter t3 build:bundle
+
+      # `vp pack` only produces dist/bin.mjs. The server serves the browser UI
+      # from dist/client, so without this it answers "No static directory
+      # configured and no dev URL set." This mirrors what apps/server/scripts/
+      # cli.ts `build` does (copy apps/web/dist -> dist/client); we do it inline
+      # rather than calling that script so we skip its *development* icon
+      # overrides, which would ship dev icons in a release build.
+      - name: Bundle web client into dist/client
+        run: |
+          set -euo pipefail
+          test -f apps/web/dist/index.html
+          rm -rf apps/server/dist/client
+          cp -r apps/web/dist apps/server/dist/client
+          test -f apps/server/dist/client/index.html
 
       - name: Package self-contained bundle
         shell: bash
