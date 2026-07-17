@@ -1,0 +1,55 @@
+[Unit]
+Description=T3 Code server (jetblk fork nightly, tailnet-only, port 3773)
+Wants=network-online.target
+After=network-online.target
+# A node without a working tailscale is broken anyway — fail hard after
+# 3 attempts instead of crash-looping forever (e.g. --skip-tailscale VMs).
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
+[Service]
+# /tmp is a small box-wide tmpfs (~half of RAM). A spawned agent that runs
+# pnpm install under /tmp put a 2.4G store on it and filled the RAM disk,
+# breaking the shell and crashing the server. Point all scratch at the 57G
+# root disk instead so checkouts/installs can't exhaust the tmpfs.
+Environment=TMPDIR=%h/.cache/t3-scratch
+Environment=TMP=%h/.cache/t3-scratch
+Environment=TEMP=%h/.cache/t3-scratch
+
+# User units can't order after the system tailscaled unit; wait (bounded)
+# for a tailnet IP so the bind below never races the interface.
+ExecStartPre=/bin/sh -c 'i=0; until tailscale ip -4 >/dev/null 2>&1; do i=$((i+1)); if [ "$i" -ge 60 ]; then echo "no tailnet IP after 120s" >&2; exit 1; fi; sleep 2; done'
+
+# Pull the latest fork nightly before starting, so a restart IS an update —
+# the same contract the old `npx t3@nightly` line gave us.
+#
+# Staged into <dir>.new and swapped, so a half-downloaded archive can never
+# replace a working install, and stale files from the previous version don't
+# linger. Extracted under ~/.local/share, deliberately NOT /tmp (see above).
+#
+# The leading `-` makes the update best-effort: if GitHub is unreachable the
+# node still starts on the build it already has, rather than refusing to boot.
+ExecStartPre=-/bin/sh -c 'set -e; \
+  d=%h/.local/share/t3-nightly; \
+  rm -rf "$d.new"; mkdir -p "$d.new"; \
+  curl -fsSL --retry 3 --retry-delay 2 -o "$d.new/t3.tgz" \
+    https://github.com/jetblk/t3code/releases/download/nightly/t3-server.tgz; \
+  tar xzf "$d.new/t3.tgz" -C "$d.new"; rm -f "$d.new/t3.tgz"; \
+  test -f "$d.new/dist/bin.mjs"; \
+  rm -rf "$d.old"; if [ -d "$d" ]; then mv "$d" "$d.old"; fi; \
+  mv "$d.new" "$d"; rm -rf "$d.old"; \
+  echo "t3 nightly: $(cat "$d/dist/VERSION" 2>/dev/null || echo unknown)"'
+
+# Binding the Tailscale IP (not 0.0.0.0) keeps this tailnet-only even if UFW
+# changes, and satisfies T3's non-loopback check for remote pairing. Refuse
+# to start with an empty IP rather than fall back to t3's default bind.
+ExecStart=/bin/sh -c 'ip="$(tailscale ip -4 | head -1)"; [ -n "$ip" ] || exit 1; \
+  exec /usr/bin/node %h/.local/share/t3-nightly/dist/bin.mjs serve --host "$ip" --port 3773'
+
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=15
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target
