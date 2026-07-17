@@ -6,9 +6,10 @@ How our nodes run the fork's server instead of upstream's `npx t3@nightly`.
 
 ```
 push to main ──► GitHub Actions (nightly-fork.yml)
-                   stamp version → typecheck + usage tests → vp pack
+                   stamp version → typecheck + usage tests
+                   → build web client + server bundle → dist/client
                    → pnpm deploy (bundle + prod node_modules)
-                 └► rolling `nightly` GitHub Release  (t3-server.tgz, ~118 MB)
+                 └► rolling `nightly` GitHub Release  (t3-server.tgz, ~125 MB)
                               │
         systemctl --user restart t3code.service  (on any node)
                               │
@@ -24,6 +25,17 @@ registry, no `~/.npmrc`.
 
 The release asset is **self-contained**: `dist/` plus production `node_modules/`,
 including the native deps (`node-pty`, sqlite). A node needs no build tooling.
+`dist/client` holds the browser UI — the server answers "No static directory configured
+and no dev URL set." without it, so the workflow builds `@t3tools/web` and copies it in.
+
+**Everything ships from one commit.** The web client, the server bundle and the version
+stamp all come from the same CI run, so a node's browser UI can never drift from its
+server. Settings → General → About shows that version.
+
+There is deliberately **no release-channel switcher** in the web UI: it is gated on the
+`VITE_HOSTED_APP_CHANNEL` build env, which only upstream's hosted Vercel deploy sets
+(to switch between `latest.app.t3.codes` / `nightly.app.t3.codes`). Self-hosted builds
+have no channels to switch between — its absence confirms you are on our build.
 
 ## Prerequisites
 
