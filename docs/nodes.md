@@ -5,7 +5,8 @@ How our nodes run the fork's server instead of upstream's `npx t3@nightly`.
 ## How it works
 
 ```
-push to main ──► GitHub Actions (nightly-fork.yml)
+nightly cron ──► GitHub Actions (nightly-fork.yml)
+                   gate: skip unless main gained a non-docs commit
                    stamp version → typecheck + usage tests
                    → build web client + server bundle → dist/client
                    → pnpm deploy (bundle + prod node_modules)
@@ -22,11 +23,17 @@ push to main ──► GitHub Actions (nightly-fork.yml)
 **A restart is an update.** There is no separate update command — same contract the old
 `npx t3@nightly` line gave us, just sourced from our fork.
 
-**When builds happen.** On every push to `main` that touches something other than docs
-(`paths-ignore: docs/**, **/*.md`), or on demand with
-`gh workflow run nightly-fork.yml --repo jetblk/t3code`. **There is no cron** — despite the
-name, `nightly` is a _channel_ (like an npm dist-tag), not a cadence. Merging an upstream
-sync into `main` is what produces a new build.
+**When builds happen.** Once a night, at 06:37 UTC — 02:37 EDT / 01:37 EST (GitHub cron has
+no DST support, so it drifts an hour across the year). A whole day's merges land in **one**
+build, not one per PR.
+
+A scheduled run first checks whether `main` gained a commit touching something other than
+docs since the last nightly; if not, it skips without building — so a quiet day, or a day of
+nothing but docs, costs nothing and burns no version number. **Need a build sooner?**
+`gh workflow run nightly-fork.yml --repo jetblk/t3code` skips that gate and always builds.
+
+`nightly` is still a _channel_ (like an npm dist-tag) as well as a cadence: it is the name of
+the rolling release nodes pull, whether it was produced by the cron or by you.
 
 **Each build publishes two releases:**
 
@@ -171,6 +178,12 @@ These are all load-bearing — each one cost us an outage or an hour.
    published release, not `~/workspace/t3code`. Local rebuilds have no effect until pushed
    and released. That is the point (every node runs the same reproducible build), but it is
    a mental-model shift if you are used to `node apps/server/dist/bin.mjs`.
+8. **Merging is not releasing.** Since builds went nightly, a merge to `main` publishes
+   nothing on its own — restart a node right after merging and you will still get last
+   night's build, with no error to tell you why. To get your merge onto a node now, dispatch
+   a build (`gh workflow run nightly-fork.yml --repo jetblk/t3code`), wait for it to publish,
+   then restart. `cat ~/.local/share/t3-nightly/dist/VERSION` tells you which build you
+   actually have.
 
 ## Fork CI notes
 
