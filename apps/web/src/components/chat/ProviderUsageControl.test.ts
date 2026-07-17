@@ -1,9 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 
-import type {
-  ProviderUsageHeadline,
-  ProviderUsagePresentation,
+import {
+  deriveProviderUsageHeadline,
+  type ProviderUsageHeadline,
+  type ProviderUsagePresentation,
 } from "../provider-usage/ProviderUsagePresentation";
 import { shouldShowProviderUsageAlert } from "./ProviderUsageControl";
 
@@ -41,6 +42,17 @@ describe("shouldShowProviderUsageAlert", () => {
     expect(shouldShowProviderUsageAlert(makeUsage(), headline(95))).toBe(true);
     expect(shouldShowProviderUsageAlert(makeUsage({ status: "unauthenticated" }), null)).toBe(true);
     expect(shouldShowProviderUsageAlert(makeUsage({ status: "error" }), null)).toBe(true);
+  });
+
+  it("shows an alert when credits are more constrained than the time window", () => {
+    const usage = makeUsage({
+      windows: [{ id: "session", label: "Session", kind: "session", usedPercent: 50 }],
+      credits: { label: "Credits", usedCredits: 95, monthlyLimit: 100 },
+    });
+    const usageHeadline = deriveProviderUsageHeadline(usage);
+
+    expect(usageHeadline).toEqual({ label: "$5.00 left", usedPercent: 95 });
+    expect(shouldShowProviderUsageAlert(usage, usageHeadline)).toBe(true);
   });
 
   it("does not alert for unsupported providers", () => {
