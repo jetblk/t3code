@@ -9,30 +9,106 @@
 # Nodes pull that asset on service restart (restart == update), mirroring the
 # `npx t3@nightly` behaviour we replaced. The repo is public, so nodes need no
 # auth to download it.
+#
+# Runs once a night, and only when main actually moved (see check_changes) — a
+# day's merges land in one build, not one per PR. Need a build sooner? Dispatch
+# it manually; that path always builds.
 name: Fork nightly
 
 on:
-  push:
-    branches: [main]
-    # Docs-only pushes produce a byte-identical server, so don't burn a build
-    # (and a version bump) on them. A push touching both docs and code still
-    # builds — paths-ignore only skips when *every* changed file matches.
-    paths-ignore:
-      - "docs/**"
-      - "**/*.md"
+  # 06:37 UTC — 02:37 EDT / 01:37 EST. GitHub cron has no DST support, so this
+  # drifts an hour across the year; both land overnight, which is all we need.
+  # The offset minute is deliberate: crons on the hour queue behind GitHub's
+  # peak load and get delayed or dropped.
+  schedule:
+    - cron: "37 6 * * *"
+  # Manual runs skip the change gate below and always build — this is the
+  # "I want my merge on a node now" path.
   workflow_dispatch:
 
-# Only the built-in token is needed — releases are published to this repo.
 permissions:
-  contents: write
+  contents: read
 
+# Never cancel in flight: the publish step deletes the `nightly` release before
+# recreating it, and a cancel inside that window would leave nodes with no
+# release to pull at all (their ExecStartPre is best-effort, so they would
+# silently keep running a stale build). Upstream's release.yml likewise has no
+# concurrency group.
 concurrency:
   group: fork-nightly
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
+  check_changes:
+    name: Check for changes since last nightly
+    # Only the cron needs a gate; a manual dispatch is an explicit "build now".
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      has_changes: ${{ steps.check.outputs.has_changes }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # No checkout on purpose — the compare API answers this in seconds, so a
+      # quiet night costs ~10s instead of a full install. Every failure path
+      # here builds rather than skips: a missed build is worse than a spare one.
+      - id: check
+        name: Compare HEAD to the last published nightly
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          build() { echo "has_changes=true" >> "$GITHUB_OUTPUT"; exit 0; }
+
+          # The rolling release records the exact commit it was built from.
+          last="$(gh release view nightly --repo "$GITHUB_REPOSITORY" \
+            --json targetCommitish -q .targetCommitish 2>/dev/null || true)"
+          if [ -z "$last" ]; then
+            echo "No nightly release to compare against — building."
+            build
+          fi
+
+          if ! json="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${last}...${GITHUB_SHA}" 2>/dev/null)"; then
+            echo "Compare against ${last} failed (force-push? deleted commit?) — building."
+            build
+          fi
+
+          # The compare API caps .files at 300. A diff that large is an upstream
+          # sync, which has code in it by definition — don't trust the truncated
+          # list, just build.
+          if [ "$(jq '.files | length' <<<"$json")" -ge 300 ]; then
+            echo "Compare truncated at 300 files — building."
+            build
+          fi
+
+          # Same intent as the old `paths-ignore: docs/**, **/*.md`, but applied
+          # to the whole day's diff rather than one push: a day of nothing but
+          # docs commits now skips, where paths-ignore judged each push alone.
+          # (Path filters only apply to push/pull_request, so they would be dead
+          # config under `schedule`.)
+          code="$(jq -r '.files[].filename' <<<"$json" | grep -vE '^docs/|\.md$' || true)"
+          if [ -z "$code" ]; then
+            echo "No code changes since ${last} — skipping tonight's build."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Code changed since ${last}:"
+            echo "$code"
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: Build and publish server bundle
+    needs: [check_changes]
+    # `!failure() && !cancelled()` is what lets a *skipped* gate through (a
+    # skipped `needs` job otherwise skips its dependents) while still halting on
+    # a *broken* one — `always()` would build even when the gate errored.
+    if: |
+      !failure() && !cancelled() &&
+      (github.event_name != 'schedule' || needs.check_changes.outputs.has_changes == 'true')
+    # Only this job publishes; the gate above needs read-only.
+    permissions:
+      contents: write
     # GitHub-hosted: the fork has no access to upstream's blacksmith runners.
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -60,13 +136,19 @@ jobs:
       - id: version
         name: Resolve fork version
         shell: bash
+        env:
+          RUN_STARTED_AT: ${{ github.run_started_at }}
         run: |
           set -euo pipefail
           # Track upstream's stable base from package.json (nightly versions are
           # never committed upstream, so main always carries the last stable),
           # then mark it as ours so it is obvious which build a node is running.
           base="$(node -p "require('./apps/server/package.json').version")"
-          version="${base}-jetblk.$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}"
+          # Date the run, not the clock: bare `date -u` reads whenever this step
+          # happens to run, so a build starting at 23:59 UTC would stamp
+          # tomorrow. Mirrors upstream's NIGHTLY_DATE: github.run_started_at.
+          day="$(date -u -d "$RUN_STARTED_AT" +%Y%m%d)"
+          version="${base}-jetblk.${day}.${GITHUB_RUN_NUMBER}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Building $version"
 
