@@ -13,6 +13,7 @@ import {
   formatCredits,
   formatResetsIn,
   percentLeft,
+  providerUsageCreditsUsedPercent,
   type EnvironmentUsageInput,
   type NodeStatus,
   type ProviderUsageCard as ProviderUsageCardData,
@@ -274,7 +275,7 @@ function ProviderUsageBody(props: {
         {card.credits && credits ? (
           <UsageWindowRow
             label={card.credits.label}
-            usedPercent={creditsUsedPercent(card.credits)}
+            usedPercent={providerUsageCreditsUsedPercent(card.credits)}
             valueText={credits}
           />
         ) : null}
@@ -401,18 +402,4 @@ function buildSubtitle(
   if (sourceNodes.length > 1) parts.push(`via ${sourceNodes.join(", ")}`);
   else if (sourceNodes.length === 1) parts.push(sourceNodes[0]);
   return parts.length > 0 ? parts.join(" · ") : null;
-}
-
-function creditsUsedPercent(credits: {
-  readonly usedCredits?: number;
-  readonly monthlyLimit?: number;
-}): number {
-  if (
-    credits.usedCredits === undefined ||
-    credits.monthlyLimit === undefined ||
-    credits.monthlyLimit <= 0
-  ) {
-    return 0;
-  }
-  return Math.max(0, Math.min(100, (credits.usedCredits / credits.monthlyLimit) * 100));
 }
