@@ -10,9 +10,11 @@ import { useThemeColor } from "../../lib/useThemeColor";
 import { useEnvironments } from "../../state/environments";
 import {
   aggregateProviderUsage,
+  areProviderUsageResultsComplete,
   formatCredits,
   formatResetsIn,
   percentLeft,
+  providerUsageCreditsHaveMeter,
   providerUsageCreditsUsedPercent,
   type EnvironmentUsageInput,
   type NodeStatus,
@@ -92,7 +94,12 @@ export function SettingsProviderUsageRouteScreen() {
     aggregate.cards.length > 0 ||
     aggregate.pendingNodes.length > 0 ||
     aggregate.failedNodes.length > 0;
-  const isInitialLoading = isReady && !hasContent && sortedEnvironments.length > 0;
+  const hasAllResults = areProviderUsageResultsComplete(
+    sortedEnvironments.map((environment) => environment.environmentId),
+    results,
+  );
+  const isInitialLoading =
+    isReady && !hasContent && sortedEnvironments.length > 0 && !hasAllResults;
 
   return (
     <View collapsable={false} className="flex-1 bg-sheet">
@@ -275,7 +282,11 @@ function ProviderUsageBody(props: {
         {card.credits && credits ? (
           <UsageWindowRow
             label={card.credits.label}
-            usedPercent={providerUsageCreditsUsedPercent(card.credits)}
+            usedPercent={
+              providerUsageCreditsHaveMeter(card.credits)
+                ? providerUsageCreditsUsedPercent(card.credits)
+                : null
+            }
             valueText={credits}
           />
         ) : null}
@@ -317,20 +328,22 @@ function ProviderUsageBody(props: {
 
 function UsageWindowRow(props: {
   readonly label: string;
-  readonly usedPercent: number;
+  readonly usedPercent: number | null;
   readonly resetsAt?: string;
   readonly nowMs?: number;
   /** Overrides the "% left" line (used for credit balances). */
   readonly valueText?: string;
 }) {
   const resets = props.nowMs !== undefined ? formatResetsIn(props.resetsAt, props.nowMs) : null;
-  const left = props.valueText ?? `${Math.round(percentLeft(props.usedPercent))}% left`;
+  const left =
+    props.valueText ??
+    (props.usedPercent === null ? "" : `${Math.round(percentLeft(props.usedPercent))}% left`);
   return (
     <View className="gap-2">
       <Text className="text-sm text-foreground" numberOfLines={1}>
         {props.label}
       </Text>
-      <UsageMeter usedPercent={props.usedPercent} />
+      {props.usedPercent === null ? null : <UsageMeter usedPercent={props.usedPercent} />}
       <View className="flex-row items-center justify-between">
         <Text className="text-xs tabular-nums text-foreground-muted">{left}</Text>
         {resets ? <Text className="text-xs text-foreground-muted">{resets}</Text> : null}

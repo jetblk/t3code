@@ -1,7 +1,8 @@
-import type { ProviderUsageCredits, ProviderUsageSnapshot } from "@t3tools/contracts";
+import type { ProviderUsageSnapshot } from "@t3tools/contracts";
 import {
   formatProviderUsageCredits,
   formatProviderUsageReset,
+  providerUsageCreditsHaveMeter,
   providerUsageCreditsUsedPercent,
   providerUsageDisplayName,
   providerUsagePercentLeft,
@@ -72,15 +73,11 @@ export function deriveProviderUsageHeadline(
   return label
     ? {
         label,
-        usedPercent: creditsHaveMeter(usage.credits)
+        usedPercent: providerUsageCreditsHaveMeter(usage.credits)
           ? providerUsageCreditsUsedPercent(usage.credits)
           : null,
       }
     : null;
-}
-
-function creditsHaveMeter(credits: ProviderUsageCredits): boolean {
-  return credits.usedCredits !== undefined && credits.monthlyLimit !== undefined;
 }
 
 export function ProviderUsageIdentity({
@@ -174,7 +171,11 @@ export function ProviderUsageDetails({
       {usage.credits && formattedCredits ? (
         <ProviderUsageWindowRow
           label={usage.credits.label}
-          usedPercent={providerUsageCreditsUsedPercent(usage.credits)}
+          usedPercent={
+            providerUsageCreditsHaveMeter(usage.credits)
+              ? providerUsageCreditsUsedPercent(usage.credits)
+              : null
+          }
           valueText={formattedCredits}
           compact={compact}
         />
@@ -192,21 +193,25 @@ export function ProviderUsageWindowRow({
   compact = false,
 }: {
   label: string;
-  usedPercent: number;
+  usedPercent: number | null;
   resetsAt?: string;
   nowMs?: number;
   valueText?: string;
   compact?: boolean;
 }) {
   const resets = nowMs === undefined ? null : formatProviderUsageReset(resetsAt, nowMs);
-  const left = valueText ?? `${Math.round(providerUsagePercentLeft(usedPercent))}% left`;
+  const left =
+    valueText ??
+    (usedPercent === null ? "" : `${Math.round(providerUsagePercentLeft(usedPercent))}% left`);
   return (
     <div className={cn("grid", compact ? "gap-1.5" : "gap-2")}>
       <div className="flex items-center justify-between gap-3 text-xs">
         <span className="truncate font-medium text-foreground/90">{label}</span>
         <span className="shrink-0 tabular-nums text-muted-foreground">{left}</span>
       </div>
-      <ProviderUsageMeter usedPercent={usedPercent} label={`${label} usage`} />
+      {usedPercent === null ? null : (
+        <ProviderUsageMeter usedPercent={usedPercent} label={`${label} usage`} />
+      )}
       {resets ? (
         <div className="text-right text-[10px] tabular-nums text-muted-foreground/65">{resets}</div>
       ) : null}

@@ -1,6 +1,7 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
   aggregateProviderUsage,
+  areProviderUsageResultsComplete,
   type EnvironmentUsageInput,
   type ProviderUsageNodeStatus,
 } from "@t3tools/client-runtime/provider-usage";
@@ -82,7 +83,12 @@ export function ProviderUsageSettings() {
     aggregate.cards.length > 0 ||
     aggregate.pendingNodes.length > 0 ||
     aggregate.failedNodes.length > 0;
-  const isInitialLoading = isReady && !hasContent && sortedEnvironments.length > 0;
+  const hasAllResults = areProviderUsageResultsComplete(
+    sortedEnvironments.map((environment) => environment.environmentId),
+    results,
+  );
+  const isInitialLoading =
+    isReady && !hasContent && sortedEnvironments.length > 0 && !hasAllResults;
   const newestFetchedAt = aggregate.cards.reduce<string | null>(
     (current, card) => (current === null || card.fetchedAt > current ? card.fetchedAt : current),
     null,

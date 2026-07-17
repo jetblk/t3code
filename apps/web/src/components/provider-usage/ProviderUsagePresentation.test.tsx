@@ -1,9 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
 import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import { renderToStaticMarkup } from "react-dom/server";
 
 import {
   buildProviderUsageSubtitle,
   deriveProviderUsageHeadline,
+  ProviderUsageDetails,
   type ProviderUsagePresentation,
 } from "./ProviderUsagePresentation";
 
@@ -56,5 +58,26 @@ describe("buildProviderUsageSubtitle", () => {
     expect(buildProviderUsageSubtitle("person@example.com", ["Local", "VPS"])).toBe(
       "person@example.com · via Local, VPS",
     );
+  });
+});
+
+describe("ProviderUsageDetails", () => {
+  it("renders meters only for limits with numeric usage data", () => {
+    const unlimitedMarkup = renderToStaticMarkup(
+      <ProviderUsageDetails
+        usage={makeUsage({ credits: { label: "Credits", unlimited: true } })}
+        nowMs={Date.parse("2026-07-17T10:00:00.000Z")}
+      />,
+    );
+    const numericMarkup = renderToStaticMarkup(
+      <ProviderUsageDetails
+        usage={makeUsage({ credits: { label: "Credits", usedCredits: 12, monthlyLimit: 100 } })}
+        nowMs={Date.parse("2026-07-17T10:00:00.000Z")}
+      />,
+    );
+
+    expect(unlimitedMarkup).toContain("Unlimited");
+    expect(unlimitedMarkup).not.toContain('role="progressbar"');
+    expect(numericMarkup).toContain('role="progressbar"');
   });
 });

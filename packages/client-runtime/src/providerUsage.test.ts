@@ -7,9 +7,12 @@ import {
 
 import {
   aggregateProviderUsage,
+  areProviderUsageResultsComplete,
   formatProviderUsageCredits,
   formatProviderUsageReset,
+  providerUsageCreditsHaveMeter,
   providerUsagePercentLeft,
+  type EnvironmentUsageInput,
 } from "./providerUsage.ts";
 
 const makeSnapshot = (overrides: Partial<ProviderUsageSnapshot> = {}): ProviderUsageSnapshot => ({
@@ -93,6 +96,34 @@ describe("aggregateProviderUsage", () => {
       { environmentId: "offline", environmentLabel: "Offline", error: "unreachable" },
     ]);
   });
+
+  it("reports completion only after every active environment has returned a result", () => {
+    const localResult = {
+      environmentId: "local",
+      environmentLabel: "Local",
+      snapshots: [],
+      isPending: false,
+      error: null,
+    } satisfies EnvironmentUsageInput;
+    const staleResult = {
+      ...localResult,
+      environmentId: "stale",
+      environmentLabel: "Stale",
+    } satisfies EnvironmentUsageInput;
+
+    expect(
+      areProviderUsageResultsComplete(["local", "vps"], {
+        local: localResult,
+        stale: staleResult,
+      }),
+    ).toBe(false);
+    expect(
+      areProviderUsageResultsComplete(["local"], {
+        local: localResult,
+        stale: staleResult,
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("provider usage formatting", () => {
@@ -104,5 +135,13 @@ describe("provider usage formatting", () => {
     expect(
       formatProviderUsageCredits({ label: "Credits", usedCredits: 57.5, monthlyLimit: 200 }),
     ).toBe("$142.50 left · $200.00 limit");
+    expect(
+      providerUsageCreditsHaveMeter({ label: "Credits", usedCredits: 57.5, monthlyLimit: 200 }),
+    ).toBe(true);
+    expect(providerUsageCreditsHaveMeter({ label: "Credits", unlimited: true })).toBe(false);
+    expect(providerUsageCreditsHaveMeter({ label: "Credits", balance: "42 credits" })).toBe(false);
+    expect(
+      providerUsageCreditsHaveMeter({ label: "Credits", usedCredits: 0, monthlyLimit: 0 }),
+    ).toBe(false);
   });
 });

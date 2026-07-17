@@ -55,6 +55,14 @@ export interface AggregatedProviderUsage {
   readonly failedNodes: ReadonlyArray<ProviderUsageNodeStatus>;
 }
 
+/** Whether every currently active environment has reported its first query state. */
+export function areProviderUsageResultsComplete(
+  environmentIds: ReadonlyArray<string>,
+  results: Readonly<Record<string, EnvironmentUsageInput>>,
+): boolean {
+  return environmentIds.every((environmentId) => results[environmentId] !== undefined);
+}
+
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   claudeAgent: "Claude",
   codex: "Codex",
@@ -193,6 +201,15 @@ export function providerUsageCreditsUsedPercent(credits: ProviderUsageCredits): 
     return 0;
   }
   return Math.max(0, Math.min(100, (credits.usedCredits / credits.monthlyLimit) * 100));
+}
+
+/** Whether a credit balance has enough numeric data for a meaningful usage meter. */
+export function providerUsageCreditsHaveMeter(credits: ProviderUsageCredits): boolean {
+  return (
+    credits.usedCredits !== undefined &&
+    credits.monthlyLimit !== undefined &&
+    credits.monthlyLimit > 0
+  );
 }
 
 function formatDollars(amount: number): string {

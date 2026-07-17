@@ -1,7 +1,9 @@
 export {
   aggregateProviderUsage,
+  areProviderUsageResultsComplete,
   formatProviderUsageCredits as formatCredits,
   formatProviderUsageReset as formatResetsIn,
+  providerUsageCreditsHaveMeter,
   providerUsageCreditsUsedPercent,
   providerUsageDisplayName as providerDisplayName,
   providerUsagePercentLeft as percentLeft,
