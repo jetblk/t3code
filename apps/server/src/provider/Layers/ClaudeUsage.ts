@@ -34,6 +34,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
@@ -48,9 +49,11 @@ const CLAUDE_OAUTH_BETA_HEADER = "oauth-2025-04-20";
 // present as a recent CLI build the same way other local usage tools do.
 const CLAUDE_USAGE_USER_AGENT = "claude-code/2.1.0";
 const CLAUDE_USAGE_TIMEOUT = Duration.seconds(15);
+const CLAUDE_RATE_LIMIT_FALLBACK = Duration.minutes(5);
 const CLAUDE_PROFILE_SCOPE = "user:profile";
 
 const SIGN_IN_MESSAGE = "Sign in with the `claude` CLI on the server machine.";
+const decodeUnknownJsonString = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
 
 export interface ClaudeUsageMeta {
   readonly instanceId: ProviderInstanceId;
@@ -62,7 +65,14 @@ interface ClaudeOauthCredentials {
   readonly accessToken: string;
   readonly expiresAt: number | undefined;
   readonly subscriptionType: string | undefined;
+  readonly rateLimitTier: string | undefined;
   readonly scopes: ReadonlyArray<string> | undefined;
+}
+
+interface ClaudeUsageState {
+  readonly credentialKey: string;
+  readonly lastGood: ProviderUsageSnapshot | undefined;
+  readonly cooldownUntilMillis: number | undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -104,11 +114,36 @@ export function parseClaudeOauthCredentials(raw: unknown): ClaudeOauthCredential
     accessToken,
     expiresAt: numberField(oauth, "expiresAt"),
     subscriptionType: stringField(oauth, "subscriptionType"),
+    rateLimitTier: stringField(oauth, "rateLimitTier"),
     scopes:
       Array.isArray(scopes) && scopes.every((scope) => typeof scope === "string")
         ? scopes
         : undefined,
   };
+}
+
+export function claudeUsagePlanLabel(
+  subscriptionType: string | undefined,
+  rateLimitTier: string | undefined,
+): string | undefined {
+  const base = claudeSubscriptionLabel(subscriptionType);
+  const multiplier = /\d+x/i.exec(rateLimitTier ?? "")?.[0]?.toLowerCase();
+  if (!base || !multiplier || base.toLowerCase().includes(multiplier)) return base;
+  return `${base} ${multiplier}`;
+}
+
+/** Resolve Retry-After seconds or an HTTP date, with a conservative fallback. */
+export function claudeRetryAfterMillis(value: string | undefined, nowMillis: number): number {
+  const trimmed = value?.trim();
+  if (trimmed) {
+    const seconds = Number(trimmed);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return nowMillis + Math.ceil(seconds * 1000);
+    }
+    const dateMillis = Date.parse(trimmed);
+    if (Number.isFinite(dateMillis) && dateMillis > nowMillis) return dateMillis;
+  }
+  return nowMillis + Duration.toMillis(CLAUDE_RATE_LIMIT_FALLBACK);
 }
 
 const WEEK_MINUTES = 7 * 24 * 60;
@@ -251,6 +286,7 @@ export const makeClaudeUsage = Effect.fn("makeClaudeUsage")(function* (
       ? resolvedHome
       : environment.CLAUDE_CONFIG_DIR?.trim() || path.join(resolvedHome, ".claude");
   const credentialsPath = path.join(configDir, ".credentials.json");
+  const state = yield* Ref.make<ClaudeUsageState | undefined>(undefined);
 
   const fetchUsage = Effect.gen(function* () {
     const fetchedAt = DateTime.formatIso(yield* DateTime.now);
@@ -270,9 +306,9 @@ export const makeClaudeUsage = Effect.fn("makeClaudeUsage")(function* (
     if (Result.isFailure(rawCredentials)) {
       return failed("unauthenticated", SIGN_IN_MESSAGE);
     }
-    const credentialsJson = yield* Schema.decodeUnknownEffect(Schema.UnknownFromJsonString)(
-      rawCredentials.success,
-    ).pipe(Effect.result);
+    const credentialsJson = yield* decodeUnknownJsonString(rawCredentials.success).pipe(
+      Effect.result,
+    );
     if (Result.isFailure(credentialsJson)) {
       return failed("unauthenticated", SIGN_IN_MESSAGE);
     }
@@ -282,10 +318,17 @@ export const makeClaudeUsage = Effect.fn("makeClaudeUsage")(function* (
     }
 
     const now = yield* DateTime.now;
-    if (
-      credentials.expiresAt !== undefined &&
-      credentials.expiresAt <= DateTime.toEpochMillis(now)
-    ) {
+    const nowMillis = DateTime.toEpochMillis(now);
+    let currentState = yield* Ref.get(state);
+    if (currentState?.credentialKey !== credentials.accessToken) {
+      currentState = {
+        credentialKey: credentials.accessToken,
+        lastGood: undefined,
+        cooldownUntilMillis: undefined,
+      };
+      yield* Ref.set(state, currentState);
+    }
+    if (credentials.expiresAt !== undefined && credentials.expiresAt <= nowMillis) {
       return failed(
         "unauthenticated",
         "Claude token expired — it refreshes the next time Claude runs on this machine.",
@@ -298,7 +341,31 @@ export const makeClaudeUsage = Effect.fn("makeClaudeUsage")(function* (
       );
     }
 
-    const planLabel = claudeSubscriptionLabel(credentials.subscriptionType);
+    const planLabel = claudeUsagePlanLabel(credentials.subscriptionType, credentials.rateLimitTier);
+    const rateLimitedSnapshot = (
+      usageState: ClaudeUsageState,
+      cooldownUntilMillis: number,
+    ): ProviderUsageSnapshot => {
+      const retryAt = DateTime.formatIso(DateTime.makeUnsafe(cooldownUntilMillis));
+      const message = "Live Claude usage is rate limited. Showing the last available values.";
+      const freshness = { state: "stale" as const, retryAt };
+      return usageState.lastGood
+        ? { ...usageState.lastGood, freshness, message }
+        : {
+            ...base,
+            status: "error",
+            ...(planLabel ? { planLabel } : {}),
+            freshness,
+            message: "Live Claude usage is rate limited. No previous values are available yet.",
+          };
+    };
+    if (
+      currentState.cooldownUntilMillis !== undefined &&
+      currentState.cooldownUntilMillis > nowMillis
+    ) {
+      return rateLimitedSnapshot(currentState, currentState.cooldownUntilMillis);
+    }
+
     const request = HttpClientRequest.get(CLAUDE_USAGE_URL).pipe(
       HttpClientRequest.bearerToken(credentials.accessToken),
       HttpClientRequest.setHeader("anthropic-beta", CLAUDE_OAUTH_BETA_HEADER),
@@ -315,6 +382,15 @@ export const makeClaudeUsage = Effect.fn("makeClaudeUsage")(function* (
       return failed("error", "Claude usage request timed out.");
     }
     const httpResponse = response.success.value;
+    if (httpResponse.status === 429) {
+      const cooldownUntilMillis = claudeRetryAfterMillis(
+        httpResponse.headers["retry-after"],
+        nowMillis,
+      );
+      currentState = { ...currentState, cooldownUntilMillis };
+      yield* Ref.set(state, currentState);
+      return rateLimitedSnapshot(currentState, cooldownUntilMillis);
+    }
     if (httpResponse.status === 401 || httpResponse.status === 403) {
       return failed(
         "unauthenticated",
@@ -332,13 +408,19 @@ export const makeClaudeUsage = Effect.fn("makeClaudeUsage")(function* (
     }
 
     const { windows, credits } = mapClaudeUsageResponse(payload.success);
-    return {
+    const snapshot = {
       ...base,
       status: "ok",
       ...(planLabel ? { planLabel } : {}),
       windows,
       ...(credits ? { credits } : {}),
     } satisfies ProviderUsageSnapshot;
+    yield* Ref.set(state, {
+      credentialKey: credentials.accessToken,
+      lastGood: snapshot,
+      cooldownUntilMillis: undefined,
+    });
+    return snapshot;
   }).pipe(
     Effect.catchDefect((defect: unknown) =>
       Effect.map(DateTime.now, (now) => ({

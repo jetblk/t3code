@@ -35,6 +35,8 @@ export interface ProviderUsageCard {
   readonly status: ProviderUsageSnapshot["status"];
   readonly windows: ReadonlyArray<ProviderUsageWindow>;
   readonly credits: ProviderUsageCredits | undefined;
+  readonly resetCredits: ProviderUsageSnapshot["resetCredits"];
+  readonly freshness: ProviderUsageSnapshot["freshness"];
   readonly message: string | undefined;
   /** Environment labels that reported this account (deduped and sorted). */
   readonly sourceNodes: ReadonlyArray<string>;
@@ -123,6 +125,8 @@ export function aggregateProviderUsage(
         status: snapshot.status,
         windows: snapshot.windows,
         credits: snapshot.credits,
+        resetCredits: snapshot.resetCredits,
+        freshness: snapshot.freshness,
         message: snapshot.message,
         sourceNodes: [input.environmentLabel],
         fetchedAt: snapshot.fetchedAt,
@@ -156,15 +160,15 @@ export function providerUsagePercentLeft(usedPercent: number): number {
   return Math.max(0, Math.min(100, 100 - usedPercent));
 }
 
-/** Format a future reset timestamp as a compact relative duration. */
-export function formatProviderUsageReset(
-  resetsAtIso: string | undefined,
+function formatProviderUsageFutureTime(
+  atIso: string | undefined,
   nowMs: number,
+  prefix: "Resets" | "Expires" | "Retries",
 ): string | null {
-  if (!resetsAtIso) return null;
-  const resetMs = Date.parse(resetsAtIso);
-  if (Number.isNaN(resetMs)) return null;
-  const diffMs = resetMs - nowMs;
+  if (!atIso) return null;
+  const atMs = Date.parse(atIso);
+  if (Number.isNaN(atMs)) return null;
+  const diffMs = atMs - nowMs;
   if (diffMs <= 0) return null;
 
   const totalMinutes = Math.floor(diffMs / 60_000);
@@ -173,11 +177,35 @@ export function formatProviderUsageReset(
   const hours = totalHours % 24;
   const days = Math.floor(totalHours / 24);
 
-  if (days > 0) return `Resets in ${days}d ${hours}h`;
+  if (days > 0) return `${prefix} in ${days}d ${hours}h`;
   if (totalHours > 0) {
-    return minutes > 0 ? `Resets in ${hours}h ${minutes}m` : `Resets in ${hours}h`;
+    return minutes > 0 ? `${prefix} in ${hours}h ${minutes}m` : `${prefix} in ${hours}h`;
   }
-  return `Resets in ${Math.max(1, minutes)}m`;
+  return `${prefix} in ${Math.max(1, minutes)}m`;
+}
+
+/** Format a future reset timestamp as a compact relative duration. */
+export function formatProviderUsageReset(
+  resetsAtIso: string | undefined,
+  nowMs: number,
+): string | null {
+  return formatProviderUsageFutureTime(resetsAtIso, nowMs, "Resets");
+}
+
+/** Format a future credit expiry as a compact relative duration. */
+export function formatProviderUsageExpiry(
+  expiresAtIso: string | undefined,
+  nowMs: number,
+): string | null {
+  return formatProviderUsageFutureTime(expiresAtIso, nowMs, "Expires");
+}
+
+/** Format the retry time attached to a stale provider snapshot. */
+export function formatProviderUsageRetry(
+  retryAtIso: string | undefined,
+  nowMs: number,
+): string | null {
+  return formatProviderUsageFutureTime(retryAtIso, nowMs, "Retries");
 }
 
 /** Format a credit balance, preferring numeric limit data when available. */

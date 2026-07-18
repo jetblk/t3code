@@ -25,6 +25,7 @@ export function shouldShowProviderUsageAlert(
   headline: ProviderUsageHeadline | null,
 ): boolean {
   if (usage.status === "error" || usage.status === "unauthenticated") return true;
+  if (usage.freshness?.state === "stale") return true;
   const usedPercent = headline?.usedPercent;
   return (
     usage.status === "ok" &&
@@ -65,6 +66,7 @@ function usageToneClass(
 ): string {
   if (usage.status === "error") return "text-destructive";
   if (usage.status === "unauthenticated") return "text-amber-600 dark:text-amber-300";
+  if (usage.freshness?.state === "stale") return "text-amber-600 dark:text-amber-300";
   const usedPercent = headline?.usedPercent ?? null;
   if (usedPercent !== null && usedPercent >= 95) return "text-red-600 dark:text-red-400";
   if (usedPercent !== null && usedPercent >= 75) return "text-amber-600 dark:text-amber-300";

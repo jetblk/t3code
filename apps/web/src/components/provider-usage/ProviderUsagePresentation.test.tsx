@@ -20,6 +20,8 @@ const makeUsage = (
   instanceId: ProviderInstanceId.make("codex"),
   message: undefined,
   planLabel: "Pro",
+  resetCredits: undefined,
+  freshness: undefined,
   sourceNodes: ["Local"],
   status: "ok",
   windows: [],
@@ -157,5 +159,46 @@ describe("ProviderUsageDetails", () => {
     expect(unlimitedMarkup).toContain("Unlimited");
     expect(unlimitedMarkup).not.toContain('role="progressbar"');
     expect(numericMarkup).toContain('role="progressbar"');
+  });
+
+  it("renders stale-state guidance with the scheduled retry", () => {
+    const markup = renderToStaticMarkup(
+      <ProviderUsageDetails
+        usage={makeUsage({
+          freshness: { state: "stale", retryAt: "2026-07-17T10:05:00.000Z" },
+          message: "Showing cached usage after provider throttling.",
+        })}
+        nowMs={Date.parse("2026-07-17T10:00:00.000Z")}
+      />,
+    );
+
+    expect(markup).toContain("Showing cached usage after provider throttling.");
+    expect(markup).toContain("Retries in 5m");
+  });
+
+  it("renders available rate-limit reset credits without a redemption action", () => {
+    const markup = renderToStaticMarkup(
+      <ProviderUsageDetails
+        usage={makeUsage({
+          resetCredits: {
+            availableCount: 1,
+            credits: [
+              {
+                id: "credit-1",
+                title: "Weekly reset",
+                description: "Resets the weekly window.",
+                expiresAt: "2026-07-18T10:00:00.000Z",
+              },
+            ],
+          },
+        })}
+        nowMs={Date.parse("2026-07-17T10:00:00.000Z")}
+      />,
+    );
+
+    expect(markup).toContain("1 available");
+    expect(markup).toContain("Weekly reset");
+    expect(markup).toContain("Expires in 1d 0h");
+    expect(markup).not.toContain("Redeem");
   });
 });

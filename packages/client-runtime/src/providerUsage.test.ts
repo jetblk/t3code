@@ -9,7 +9,9 @@ import {
   aggregateProviderUsage,
   areProviderUsageResultsComplete,
   formatProviderUsageCredits,
+  formatProviderUsageExpiry,
   formatProviderUsageReset,
+  formatProviderUsageRetry,
   providerUsageCreditsHaveMeter,
   providerUsagePercentLeft,
   type EnvironmentUsageInput,
@@ -47,6 +49,11 @@ describe("aggregateProviderUsage", () => {
           makeSnapshot({
             account: "PERSON@example.com",
             planLabel: "Current plan",
+            freshness: { state: "stale", retryAt: "2026-07-17T11:05:00.000Z" },
+            resetCredits: {
+              availableCount: 1,
+              credits: [{ id: "reset-1", expiresAt: "2026-07-20T11:00:00.000Z" }],
+            },
             fetchedAt: "2026-07-17T11:00:00.000Z",
           }),
         ],
@@ -59,6 +66,11 @@ describe("aggregateProviderUsage", () => {
     expect(result.cards[0]).toMatchObject({
       instanceId: "codex",
       planLabel: "Current plan",
+      freshness: { state: "stale", retryAt: "2026-07-17T11:05:00.000Z" },
+      resetCredits: {
+        availableCount: 1,
+        credits: [{ id: "reset-1", expiresAt: "2026-07-20T11:00:00.000Z" }],
+      },
       sourceNodes: ["Local", "VPS"],
     });
   });
@@ -131,6 +143,8 @@ describe("provider usage formatting", () => {
 
   it("formats reset times, percentages, and credits", () => {
     expect(formatProviderUsageReset("2026-07-17T13:48:00.000Z", nowMs)).toBe("Resets in 3h 48m");
+    expect(formatProviderUsageExpiry("2026-07-17T13:48:00.000Z", nowMs)).toBe("Expires in 3h 48m");
+    expect(formatProviderUsageRetry("2026-07-17T10:05:00.000Z", nowMs)).toBe("Retries in 5m");
     expect(providerUsagePercentLeft(130)).toBe(0);
     expect(
       formatProviderUsageCredits({ label: "Credits", usedCredits: 57.5, monthlyLimit: 200 }),

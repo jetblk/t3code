@@ -12,7 +12,9 @@ import {
   aggregateProviderUsage,
   areProviderUsageResultsComplete,
   formatCredits,
+  formatExpiresIn,
   formatResetsIn,
+  formatRetriesIn,
   percentLeft,
   providerUsageCreditsHaveMeter,
   providerUsageCreditsUsedPercent,
@@ -262,14 +264,34 @@ function ProviderUsageBody(props: {
   const { card, nowMs } = props;
   const dangerColor = useThemeColor("--color-danger-foreground");
   const iconColor = useThemeColor("--color-icon");
+  const warningColor = useThemeColor("--color-warning");
 
   if (card.status === "ok") {
     const credits = card.credits ? formatCredits(card.credits) : null;
-    if (card.windows.length === 0 && !credits) {
-      return <Text className="text-sm text-foreground-muted">No active limits reported.</Text>;
-    }
+    const resetCredits = card.resetCredits;
+    const hasResetCredits = resetCredits !== undefined && resetCredits.availableCount > 0;
+    const isStale = card.freshness?.state === "stale";
+    const retry = formatRetriesIn(card.freshness?.retryAt, nowMs);
     return (
       <View className="gap-5">
+        {isStale ? (
+          <View className="flex-row items-start gap-3 rounded-2xl bg-subtle px-4 py-3">
+            <SymbolView
+              name="exclamationmark.triangle"
+              size={18}
+              tintColor={warningColor}
+              type="monochrome"
+              weight="regular"
+            />
+            <Text className="flex-1 text-sm text-foreground-secondary">
+              {card.message ?? "Showing the most recent usage because live usage is unavailable."}
+              {retry ? ` ${retry}.` : null}
+            </Text>
+          </View>
+        ) : null}
+        {card.windows.length === 0 && !credits && !hasResetCredits ? (
+          <Text className="text-sm text-foreground-muted">No active limits reported.</Text>
+        ) : null}
         {card.windows.map((window) => (
           <UsageWindowRow
             key={window.id}
@@ -289,6 +311,9 @@ function ProviderUsageBody(props: {
             }
             valueText={credits}
           />
+        ) : null}
+        {resetCredits && resetCredits.availableCount > 0 ? (
+          <ResetCreditsRow resetCredits={resetCredits} nowMs={nowMs} />
         ) : null}
       </View>
     );
@@ -322,6 +347,44 @@ function ProviderUsageBody(props: {
         {card.message ??
           (isError ? "Couldn't load usage." : "Sign in to this provider to see usage.")}
       </Text>
+    </View>
+  );
+}
+
+function ResetCreditsRow(props: {
+  readonly resetCredits: NonNullable<ProviderUsageCardData["resetCredits"]>;
+  readonly nowMs: number;
+}) {
+  return (
+    <View className="gap-2">
+      <View className="flex-row items-center justify-between gap-3">
+        <Text className="text-sm text-foreground">Rate limit resets</Text>
+        <Text className="text-xs tabular-nums text-foreground-muted">
+          {props.resetCredits.availableCount} available
+        </Text>
+      </View>
+      {props.resetCredits.credits.length > 0 ? (
+        <View className="gap-3 rounded-2xl bg-subtle px-4 py-3">
+          {props.resetCredits.credits.map((credit) => {
+            const expiry = formatExpiresIn(credit.expiresAt, props.nowMs);
+            return (
+              <View key={credit.id} className="gap-1">
+                <View className="flex-row items-start justify-between gap-3">
+                  <Text className="flex-1 text-sm text-foreground-secondary">
+                    {credit.title ?? "Rate limit reset"}
+                  </Text>
+                  {expiry ? (
+                    <Text className="text-xs tabular-nums text-foreground-muted">{expiry}</Text>
+                  ) : null}
+                </View>
+                {credit.description ? (
+                  <Text className="text-xs text-foreground-muted">{credit.description}</Text>
+                ) : null}
+              </View>
+            );
+          })}
+        </View>
+      ) : null}
     </View>
   );
 }

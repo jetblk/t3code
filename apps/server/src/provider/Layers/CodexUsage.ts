@@ -13,6 +13,7 @@ import type {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderUsageCredits,
+  ProviderUsageResetCredits,
   ProviderUsageSnapshot,
   ProviderUsageWindow,
 } from "@t3tools/contracts";
@@ -47,6 +48,14 @@ export interface CodexUsageMeta {
 
 function clampPercent(value: number): number {
   return Math.min(100, Math.max(0, value));
+}
+
+function toTitleCaseWords(value: string): string {
+  return value
+    .split(/[\s_-]+/g)
+    .filter((part) => part.length > 0)
+    .map((part) => part[0]!.toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
 }
 
 /**
@@ -91,14 +100,24 @@ export function codexPlanLabel(
   }
 }
 
+type CodexRateLimitSnapshot = CodexSchema.V2GetAccountRateLimitsResponse["rateLimits"];
+type ClassifiedWindowKind = "session" | "weekly";
+
+function exactWindowKind(
+  window: CodexSchema.V2GetAccountRateLimitsResponse__RateLimitWindow,
+): ClassifiedWindowKind | undefined {
+  if (window.windowDurationMins === SESSION_WINDOW_MINUTES) return "session";
+  if (window.windowDurationMins === WEEK_MINUTES) return "weekly";
+  return undefined;
+}
+
 function rateLimitWindow(input: {
-  readonly window: CodexSchema.V2GetAccountRateLimitsResponse__RateLimitWindow | null | undefined;
+  readonly window: CodexSchema.V2GetAccountRateLimitsResponse__RateLimitWindow;
   readonly id: string;
   readonly label: string;
   readonly kind: ProviderUsageWindow["kind"];
   readonly fallbackWindowMinutes: number;
-}): ProviderUsageWindow | undefined {
-  if (!input.window) return undefined;
+}): ProviderUsageWindow {
   const resetsAt = codexEpochToIso(input.window.resetsAt);
   const windowMinutes = input.window.windowDurationMins ?? input.fallbackWindowMinutes;
   return {
@@ -112,33 +131,110 @@ function rateLimitWindow(input: {
 }
 
 /**
+ * Codex can move a temporarily sole weekly limit into the primary slot. Use
+ * explicit duration first, then fall back to the historical slot meaning only
+ * when duration is absent or unfamiliar.
+ */
+function classifiedRateLimitWindows(input: {
+  readonly rateLimits: CodexRateLimitSnapshot;
+  readonly idPrefix?: string;
+  readonly modelLabel?: string;
+}): ReadonlyArray<ProviderUsageWindow> {
+  const candidates = [
+    input.rateLimits.primary
+      ? { window: input.rateLimits.primary, fallbackKind: "session" as const, slot: "primary" }
+      : undefined,
+    input.rateLimits.secondary
+      ? { window: input.rateLimits.secondary, fallbackKind: "weekly" as const, slot: "secondary" }
+      : undefined,
+  ].filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== undefined);
+
+  const result: Array<ProviderUsageWindow> = [];
+  for (const kind of ["session", "weekly"] as const) {
+    const candidate =
+      candidates.find((entry) => exactWindowKind(entry.window) === kind) ??
+      candidates.find(
+        (entry) => exactWindowKind(entry.window) === undefined && entry.fallbackKind === kind,
+      );
+    if (!candidate) continue;
+    const modelLabel = input.modelLabel;
+    result.push(
+      rateLimitWindow({
+        window: candidate.window,
+        id: input.idPrefix ? `${input.idPrefix}:${kind}` : candidate.slot,
+        label:
+          modelLabel !== undefined
+            ? kind === "weekly"
+              ? `${modelLabel} Weekly`
+              : modelLabel
+            : kind === "weekly"
+              ? "Weekly"
+              : "Session",
+        kind: modelLabel !== undefined ? "model" : kind,
+        fallbackWindowMinutes: kind === "weekly" ? WEEK_MINUTES : SESSION_WINDOW_MINUTES,
+      }),
+    );
+  }
+  return result;
+}
+
+function mapCodexResetCredits(
+  summary: CodexSchema.V2GetAccountRateLimitsResponse["rateLimitResetCredits"],
+): ProviderUsageResetCredits | undefined {
+  if (!summary) return undefined;
+  const credits = (summary.credits ?? []).flatMap((credit) => {
+    if (credit.status !== "available" || credit.id.trim().length === 0) return [];
+    const expiresAt = codexEpochToIso(credit.expiresAt);
+    return [
+      {
+        id: credit.id,
+        ...(credit.title?.trim() ? { title: credit.title.trim() } : {}),
+        ...(credit.description?.trim() ? { description: credit.description.trim() } : {}),
+        ...(expiresAt ? { expiresAt } : {}),
+      },
+    ];
+  });
+  credits.sort((a, b) => (a.expiresAt ?? "\uffff").localeCompare(b.expiresAt ?? "\uffff"));
+  return {
+    availableCount: Math.max(0, Math.floor(summary.availableCount)),
+    credits,
+  };
+}
+
+/**
  * Map `account/rateLimits/read` to normalized windows + credits + plan.
  * Exported for fixture-driven tests.
  */
 export function mapCodexRateLimits(response: CodexSchema.V2GetAccountRateLimitsResponse): {
   readonly windows: ReadonlyArray<ProviderUsageWindow>;
   readonly credits: ProviderUsageCredits | undefined;
+  readonly resetCredits: ProviderUsageResetCredits | undefined;
   readonly planLabel: string | undefined;
 } {
   const rateLimits = response.rateLimits;
-  const windows: Array<ProviderUsageWindow> = [];
+  const byLimitId = Object.entries(response.rateLimitsByLimitId ?? {});
+  const coreEntry =
+    (rateLimits.limitId
+      ? byLimitId.find(([limitId]) => limitId === rateLimits.limitId)
+      : undefined) ??
+    byLimitId.find(([limitId]) => limitId.toLowerCase() === "codex") ??
+    (byLimitId.length === 1 ? byLimitId[0] : undefined);
+  const coreRateLimits = coreEntry?.[1] ?? rateLimits;
+  const windows: Array<ProviderUsageWindow> = [
+    ...classifiedRateLimitWindows({ rateLimits: coreRateLimits }),
+  ];
 
-  const primary = rateLimitWindow({
-    window: rateLimits.primary,
-    id: "primary",
-    label: "Session",
-    kind: "session",
-    fallbackWindowMinutes: SESSION_WINDOW_MINUTES,
-  });
-  if (primary) windows.push(primary);
-  const secondary = rateLimitWindow({
-    window: rateLimits.secondary,
-    id: "secondary",
-    label: "Weekly",
-    kind: "weekly",
-    fallbackWindowMinutes: WEEK_MINUTES,
-  });
-  if (secondary) windows.push(secondary);
+  for (const [limitId, bucket] of byLimitId) {
+    if (limitId === coreEntry?.[0]) continue;
+    const label = bucket.limitName?.trim() || toTitleCaseWords(limitId);
+    windows.push(
+      ...classifiedRateLimitWindows({
+        rateLimits: bucket,
+        idPrefix: `limit:${limitId.toLowerCase()}`,
+        modelLabel: label,
+      }),
+    );
+  }
 
   const individualLimit = rateLimits.individualLimit;
   if (individualLimit) {
@@ -162,7 +258,12 @@ export function mapCodexRateLimits(response: CodexSchema.V2GetAccountRateLimitsR
         }
       : undefined;
 
-  return { windows, credits, planLabel: codexPlanLabel(rateLimits.planType) };
+  return {
+    windows,
+    credits,
+    resetCredits: mapCodexResetCredits(response.rateLimitResetCredits),
+    planLabel: codexPlanLabel(rateLimits.planType ?? coreRateLimits.planType),
+  };
 }
 
 function codexAccountEmail(
@@ -249,7 +350,7 @@ export const makeCodexUsage = Effect.fn("makeCodexUsage")(function* (
       return failed("unauthenticated", LOGIN_MESSAGE);
     }
 
-    const { windows, credits, planLabel } = mapCodexRateLimits(probe.rateLimits);
+    const { windows, credits, resetCredits, planLabel } = mapCodexRateLimits(probe.rateLimits);
     return {
       ...base,
       ...(probe.email ? { account: probe.email } : {}),
@@ -257,6 +358,7 @@ export const makeCodexUsage = Effect.fn("makeCodexUsage")(function* (
       ...(planLabel ? { planLabel } : {}),
       windows,
       ...(credits ? { credits } : {}),
+      ...(resetCredits ? { resetCredits } : {}),
     } satisfies ProviderUsageSnapshot;
   }).pipe(
     Effect.catchDefect((defect: unknown) =>

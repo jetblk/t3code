@@ -19,6 +19,8 @@ const makeUsage = (
   instanceId: ProviderInstanceId.make("codex"),
   message: undefined,
   planLabel: "Pro",
+  resetCredits: undefined,
+  freshness: undefined,
   sourceNodes: [],
   status: "ok",
   windows: [],
@@ -42,6 +44,9 @@ describe("shouldShowProviderUsageAlert", () => {
     expect(shouldShowProviderUsageAlert(makeUsage(), headline(95))).toBe(true);
     expect(shouldShowProviderUsageAlert(makeUsage({ status: "unauthenticated" }), null)).toBe(true);
     expect(shouldShowProviderUsageAlert(makeUsage({ status: "error" }), null)).toBe(true);
+    expect(
+      shouldShowProviderUsageAlert(makeUsage({ freshness: { state: "stale" } }), headline(3)),
+    ).toBe(true);
   });
 
   it("alerts on nearly consumed credits only after the limits are exhausted", () => {
