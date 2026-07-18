@@ -319,15 +319,17 @@ export const makeClaudeUsage = Effect.fn("makeClaudeUsage")(function* (
 
     const now = yield* DateTime.now;
     const nowMillis = DateTime.toEpochMillis(now);
-    let currentState = yield* Ref.get(state);
-    if (currentState?.credentialKey !== credentials.accessToken) {
-      currentState = {
-        credentialKey: credentials.accessToken,
-        lastGood: undefined,
-        cooldownUntilMillis: undefined,
-      };
-      yield* Ref.set(state, currentState);
-    }
+    const currentState = yield* Ref.modify(state, (latest) => {
+      const active =
+        latest?.credentialKey === credentials.accessToken
+          ? latest
+          : {
+              credentialKey: credentials.accessToken,
+              lastGood: undefined,
+              cooldownUntilMillis: undefined,
+            };
+      return [active, active] as const;
+    });
     if (credentials.expiresAt !== undefined && credentials.expiresAt <= nowMillis) {
       return failed(
         "unauthenticated",
@@ -387,9 +389,18 @@ export const makeClaudeUsage = Effect.fn("makeClaudeUsage")(function* (
         httpResponse.headers["retry-after"],
         nowMillis,
       );
-      currentState = { ...currentState, cooldownUntilMillis };
-      yield* Ref.set(state, currentState);
-      return rateLimitedSnapshot(currentState, cooldownUntilMillis);
+      const rateLimitedState = yield* Ref.modify(state, (latest) => {
+        const requestState =
+          latest?.credentialKey === credentials.accessToken ? latest : currentState;
+        const nextState = {
+          ...requestState,
+          cooldownUntilMillis: Math.max(requestState.cooldownUntilMillis ?? 0, cooldownUntilMillis),
+        };
+        return latest?.credentialKey === credentials.accessToken
+          ? ([nextState, nextState] as const)
+          : ([nextState, latest] as const);
+      });
+      return rateLimitedSnapshot(rateLimitedState, rateLimitedState.cooldownUntilMillis);
     }
     if (httpResponse.status === 401 || httpResponse.status === 403) {
       return failed(
@@ -415,10 +426,16 @@ export const makeClaudeUsage = Effect.fn("makeClaudeUsage")(function* (
       windows,
       ...(credits ? { credits } : {}),
     } satisfies ProviderUsageSnapshot;
-    yield* Ref.set(state, {
-      credentialKey: credentials.accessToken,
-      lastGood: snapshot,
-      cooldownUntilMillis: undefined,
+    yield* Ref.update(state, (latest) => {
+      if (latest?.credentialKey !== credentials.accessToken) return latest;
+      return {
+        ...latest,
+        lastGood: snapshot,
+        cooldownUntilMillis:
+          latest.cooldownUntilMillis !== undefined && latest.cooldownUntilMillis > nowMillis
+            ? latest.cooldownUntilMillis
+            : undefined,
+      };
     });
     return snapshot;
   }).pipe(

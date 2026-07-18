@@ -1,8 +1,10 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Path from "effect/Path";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
@@ -199,17 +201,29 @@ describe("Claude usage metadata", () => {
   });
 });
 
+const makeTestClaudeUsage = Effect.fn("makeTestClaudeUsage")(function* (
+  httpClient: HttpClient.HttpClient,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const configDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-usage-" });
+  yield* fs.writeFileString(
+    path.join(configDir, ".credentials.json"),
+    '{"claudeAiOauth":{"accessToken":"test-token","subscriptionType":"pro","scopes":["user:profile"]}}',
+  );
+  return yield* makeClaudeUsage(
+    { homePath: configDir },
+    {
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      driverKind: ProviderDriverKind.make("claudeAgent"),
+      displayName: undefined,
+    },
+  ).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
+});
+
 it.layer(NodeServices.layer)("Claude usage cooldown", (it) => {
   it.effect("serves the last good snapshot and avoids repeated requests during a 429", () =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const configDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-usage-" });
-      yield* fs.writeFileString(
-        path.join(configDir, ".credentials.json"),
-        '{"claudeAiOauth":{"accessToken":"test-token","subscriptionType":"pro","scopes":["user:profile"]}}',
-      );
-
       let requestCount = 0;
       const httpClient = HttpClient.make((request) =>
         Effect.sync(() => {
@@ -221,14 +235,7 @@ it.layer(NodeServices.layer)("Claude usage cooldown", (it) => {
           return HttpClientResponse.fromWeb(request, response);
         }),
       );
-      const usage = yield* makeClaudeUsage(
-        { homePath: configDir },
-        {
-          instanceId: ProviderInstanceId.make("claudeAgent"),
-          driverKind: ProviderDriverKind.make("claudeAgent"),
-          displayName: undefined,
-        },
-      ).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
+      const usage = yield* makeTestClaudeUsage(httpClient);
 
       const fresh = yield* usage.fetchUsage;
       const throttled = yield* usage.fetchUsage;
@@ -247,6 +254,94 @@ it.layer(NodeServices.layer)("Claude usage cooldown", (it) => {
         freshness: { state: "stale" },
       });
       expect(throttled.freshness?.retryAt).toBe(duringCooldown.freshness?.retryAt);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("preserves a concurrent cooldown when an older successful request finishes", () =>
+    Effect.gen(function* () {
+      const firstRequestStarted = yield* Deferred.make<void>();
+      const releaseFirstResponse = yield* Deferred.make<void>();
+      let requestCount = 0;
+      const httpClient = HttpClient.make((request) =>
+        Effect.gen(function* () {
+          requestCount += 1;
+          if (requestCount === 1) {
+            yield* Deferred.succeed(firstRequestStarted, undefined);
+            yield* Deferred.await(releaseFirstResponse);
+            return HttpClientResponse.fromWeb(
+              request,
+              Response.json({ five_hour: { utilization: 25 } }),
+            );
+          }
+          return HttpClientResponse.fromWeb(
+            request,
+            new Response(null, { status: 429, headers: { "retry-after": "300" } }),
+          );
+        }),
+      );
+      const usage = yield* makeTestClaudeUsage(httpClient);
+
+      const successfulRequest = yield* usage.fetchUsage.pipe(Effect.forkScoped);
+      yield* Deferred.await(firstRequestStarted);
+      const throttled = yield* usage.fetchUsage;
+      yield* Deferred.succeed(releaseFirstResponse, undefined);
+      const fresh = yield* Fiber.join(successfulRequest);
+      const duringCooldown = yield* usage.fetchUsage;
+
+      expect(requestCount).toBe(2);
+      expect(throttled).toMatchObject({ status: "error", freshness: { state: "stale" } });
+      expect(fresh.status).toBe("ok");
+      expect(duringCooldown).toMatchObject({
+        status: "ok",
+        windows: fresh.windows,
+        freshness: { state: "stale" },
+      });
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("preserves a concurrent successful snapshot when an older request is throttled", () =>
+    Effect.gen(function* () {
+      const firstRequestStarted = yield* Deferred.make<void>();
+      const releaseFirstResponse = yield* Deferred.make<void>();
+      let requestCount = 0;
+      const httpClient = HttpClient.make((request) =>
+        Effect.gen(function* () {
+          requestCount += 1;
+          if (requestCount === 1) {
+            yield* Deferred.succeed(firstRequestStarted, undefined);
+            yield* Deferred.await(releaseFirstResponse);
+            return HttpClientResponse.fromWeb(
+              request,
+              new Response(null, { status: 429, headers: { "retry-after": "300" } }),
+            );
+          }
+          return HttpClientResponse.fromWeb(
+            request,
+            Response.json({ five_hour: { utilization: 25 } }),
+          );
+        }),
+      );
+      const usage = yield* makeTestClaudeUsage(httpClient);
+
+      const throttledRequest = yield* usage.fetchUsage.pipe(Effect.forkScoped);
+      yield* Deferred.await(firstRequestStarted);
+      const fresh = yield* usage.fetchUsage;
+      yield* Deferred.succeed(releaseFirstResponse, undefined);
+      const throttled = yield* Fiber.join(throttledRequest);
+      const duringCooldown = yield* usage.fetchUsage;
+
+      expect(requestCount).toBe(2);
+      expect(fresh.status).toBe("ok");
+      expect(throttled).toMatchObject({
+        status: "ok",
+        windows: fresh.windows,
+        freshness: { state: "stale" },
+      });
+      expect(duringCooldown).toMatchObject({
+        status: "ok",
+        windows: fresh.windows,
+        freshness: { state: "stale" },
+      });
     }).pipe(Effect.scoped),
   );
 });
