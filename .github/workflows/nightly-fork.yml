@@ -10,18 +10,18 @@
 # `npx t3@nightly` behaviour we replaced. The repo is public, so nodes need no
 # auth to download it.
 #
-# Runs once a night, and only when main actually moved (see check_changes) — a
-# day's merges land in one build, not one per PR. Need a build sooner? Dispatch
-# it manually; that path always builds.
+# Checks every 3 hours (mirroring upstream's release.yml cadence), and only
+# builds when main actually moved (see check_changes) — a quiet window costs a
+# ~10s gate check, not a build. Need a build sooner? Dispatch it manually; that
+# path always builds.
 name: Fork nightly
 
 on:
-  # 06:37 UTC — 02:37 EDT / 01:37 EST. GitHub cron has no DST support, so this
-  # drifts an hour across the year; both land overnight, which is all we need.
-  # The offset minute is deliberate: crons on the hour queue behind GitHub's
-  # peak load and get delayed or dropped.
+  # Every 3 hours — same cadence upstream's release.yml uses for its nightly
+  # channel. The offset minute is deliberate: crons on the hour queue behind
+  # GitHub's peak load and get delayed or dropped.
   schedule:
-    - cron: "37 6 * * *"
+    - cron: "37 */3 * * *"
   # Manual runs skip the change gate below and always build — this is the
   # "I want my merge on a node now" path.
   workflow_dispatch:
@@ -89,7 +89,7 @@ jobs:
           # config under `schedule`.)
           code="$(jq -r '.files[].filename' <<<"$json" | grep -vE '^docs/|\.md$' || true)"
           if [ -z "$code" ]; then
-            echo "No code changes since ${last} — skipping tonight's build."
+            echo "No code changes since ${last} — skipping this build."
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
           else
             echo "Code changed since ${last}:"
