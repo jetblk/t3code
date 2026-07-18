@@ -55,6 +55,34 @@ export const ProviderUsageCredits = Schema.Struct({
 });
 export type ProviderUsageCredits = typeof ProviderUsageCredits.Type;
 
+/** One available credit that can reset provider rate-limit windows. */
+export const ProviderUsageResetCredit = Schema.Struct({
+  /** Opaque provider identifier. Read-only until a separate redemption capability is approved. */
+  id: TrimmedNonEmptyString,
+  title: Schema.optional(TrimmedNonEmptyString),
+  description: Schema.optional(TrimmedNonEmptyString),
+  expiresAt: Schema.optional(IsoDateTime),
+});
+export type ProviderUsageResetCredit = typeof ProviderUsageResetCredit.Type;
+
+/** Read-only inventory of on-demand rate-limit reset credits. */
+export const ProviderUsageResetCredits = Schema.Struct({
+  availableCount: Schema.Number,
+  /** Absent details mean only the aggregate count was available upstream. */
+  credits: Schema.Array(ProviderUsageResetCredit).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+});
+export type ProviderUsageResetCredits = typeof ProviderUsageResetCredits.Type;
+
+/** Optional freshness metadata. Absence means the snapshot is live. */
+export const ProviderUsageFreshness = Schema.Struct({
+  state: Schema.Literals(["fresh", "stale"]),
+  /** Earliest time the collector intends to retry a throttled live request. */
+  retryAt: Schema.optional(IsoDateTime),
+});
+export type ProviderUsageFreshness = typeof ProviderUsageFreshness.Type;
+
 export const ProviderUsageStatus = Schema.Literals([
   "ok",
   "unauthenticated",
@@ -84,7 +112,9 @@ export const ProviderUsageSnapshot = Schema.Struct({
   planLabel: Schema.optional(TrimmedNonEmptyString),
   windows: Schema.Array(ProviderUsageWindow).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   credits: Schema.optional(ProviderUsageCredits),
-  /** Human guidance for non-`ok` statuses ("Run `codex login` on the server machine"). */
+  resetCredits: Schema.optional(ProviderUsageResetCredits),
+  freshness: Schema.optional(ProviderUsageFreshness),
+  /** Human guidance or a freshness notice associated with this snapshot. */
   message: Schema.optional(TrimmedNonEmptyString),
   fetchedAt: IsoDateTime,
 });

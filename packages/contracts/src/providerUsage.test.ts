@@ -32,7 +32,21 @@ describe("ProviderUsageSnapshot", () => {
         monthlyLimit: 100,
         unlimited: false,
       },
-      message: "Usage refreshed successfully.",
+      resetCredits: {
+        availableCount: 1,
+        credits: [
+          {
+            id: "reset-1",
+            title: "Usage reset",
+            expiresAt: "2025-01-22T10:00:00.000Z",
+          },
+        ],
+      },
+      freshness: {
+        state: "stale",
+        retryAt: "2025-01-15T10:05:00.000Z",
+      },
+      message: "Live usage is temporarily rate limited.",
       fetchedAt: "2025-01-15T10:00:00.000Z",
     };
 

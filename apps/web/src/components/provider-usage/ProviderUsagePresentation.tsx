@@ -1,7 +1,9 @@
 import type { ProviderUsageSnapshot } from "@t3tools/contracts";
 import {
   formatProviderUsageCredits,
+  formatProviderUsageExpiry,
   formatProviderUsageReset,
+  formatProviderUsageRetry,
   providerUsageCreditsHaveMeter,
   providerUsageCreditsUsedPercent,
   providerUsageDisplayName,
@@ -23,6 +25,8 @@ export type ProviderUsagePresentation = Pick<
   | "instanceId"
   | "message"
   | "planLabel"
+  | "resetCredits"
+  | "freshness"
   | "sourceNodes"
   | "status"
   | "windows"
@@ -41,6 +45,8 @@ export function providerUsagePresentationFromSnapshot(
     instanceId: snapshot.instanceId,
     message: snapshot.message,
     planLabel: snapshot.planLabel,
+    resetCredits: snapshot.resetCredits,
+    freshness: snapshot.freshness,
     sourceNodes,
     status: snapshot.status,
     windows: snapshot.windows,
@@ -183,12 +189,25 @@ export function ProviderUsageDetails({
   }
 
   const formattedCredits = usage.credits ? formatProviderUsageCredits(usage.credits) : null;
-  if (usage.windows.length === 0 && !formattedCredits) {
-    return <p className="text-xs text-muted-foreground">No active limits reported.</p>;
-  }
+  const resetCredits = usage.resetCredits;
+  const hasResetCredits = resetCredits !== undefined && resetCredits.availableCount > 0;
+  const isStale = usage.freshness?.state === "stale";
+  const retry = formatProviderUsageRetry(usage.freshness?.retryAt, nowMs);
 
   return (
     <div className={cn("grid", compact ? "gap-3.5" : "gap-5")}>
+      {isStale ? (
+        <div className="flex items-start gap-2.5 rounded-lg bg-amber-500/10 px-3 py-2.5 text-xs text-amber-800 dark:text-amber-200">
+          <CircleAlertIcon className="mt-0.5 size-4 shrink-0" />
+          <span>
+            {usage.message ?? "Showing the most recent usage because live usage is unavailable."}
+            {retry ? ` ${retry}.` : null}
+          </span>
+        </div>
+      ) : null}
+      {usage.windows.length === 0 && !formattedCredits && !hasResetCredits ? (
+        <p className="text-xs text-muted-foreground">No active limits reported.</p>
+      ) : null}
       {usage.windows.map((window) => (
         <ProviderUsageWindowRow
           key={window.id}
@@ -210,6 +229,50 @@ export function ProviderUsageDetails({
           valueText={formattedCredits}
           compact={compact}
         />
+      ) : null}
+      {resetCredits && resetCredits.availableCount > 0 ? (
+        <ProviderUsageResetCreditsRow resetCredits={resetCredits} nowMs={nowMs} />
+      ) : null}
+    </div>
+  );
+}
+
+function ProviderUsageResetCreditsRow({
+  resetCredits,
+  nowMs,
+}: {
+  resetCredits: NonNullable<ProviderUsagePresentation["resetCredits"]>;
+  nowMs: number;
+}) {
+  return (
+    <div className="grid gap-2">
+      <div className="flex items-center justify-between gap-3 text-xs">
+        <span className="font-medium text-foreground/90">Rate limit resets</span>
+        <span className="shrink-0 tabular-nums text-muted-foreground">
+          {resetCredits.availableCount} available
+        </span>
+      </div>
+      {resetCredits.credits.length > 0 ? (
+        <div className="grid gap-1.5 rounded-lg bg-muted/50 px-3 py-2">
+          {resetCredits.credits.map((credit) => {
+            const expiry = formatProviderUsageExpiry(credit.expiresAt, nowMs);
+            return (
+              <div key={credit.id} className="grid gap-0.5 text-[11px]">
+                <div className="flex items-start justify-between gap-3">
+                  <span className="font-medium text-foreground/80">
+                    {credit.title ?? "Rate limit reset"}
+                  </span>
+                  {expiry ? (
+                    <span className="shrink-0 tabular-nums text-muted-foreground/65">{expiry}</span>
+                  ) : null}
+                </div>
+                {credit.description ? (
+                  <span className="text-muted-foreground/75">{credit.description}</span>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
       ) : null}
     </div>
   );

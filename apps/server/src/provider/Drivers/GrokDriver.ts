@@ -13,6 +13,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { makeGrokTextGeneration } from "../../textGeneration/GrokTextGeneration.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeGrokAdapter } from "../Layers/GrokAdapter.ts";
+import { makeGrokUsage } from "../Layers/GrokUsage.ts";
 import {
   buildInitialGrokProviderSnapshot,
   checkGrokProviderStatus,
@@ -87,6 +88,7 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
       const crypto = yield* Crypto.Crypto;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const httpClient = yield* HttpClient.HttpClient;
+      const serverConfig = yield* ServerConfig;
       const serverSettings = yield* ServerSettingsService;
       const eventLoggers = yield* ProviderEventLoggers;
       const processEnv = mergeProviderInstanceEnvironment(environment);
@@ -112,6 +114,12 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
         instanceId,
       });
       const textGeneration = yield* makeGrokTextGeneration(effectiveConfig, processEnv);
+      const usage = yield* makeGrokUsage(
+        effectiveConfig,
+        { instanceId, driverKind: DRIVER_KIND, displayName },
+        processEnv,
+        serverConfig.cwd,
+      );
 
       const checkProvider = checkGrokProviderStatus(effectiveConfig, processEnv).pipe(
         Effect.map(stampIdentity),
@@ -159,6 +167,7 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
         snapshot,
         adapter,
         textGeneration,
+        usage,
       } satisfies ProviderInstance;
     }),
 };

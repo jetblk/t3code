@@ -1,6 +1,20 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
+import * as Path from "effect/Path";
+import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
-import { mapClaudeUsageResponse, parseClaudeOauthCredentials } from "./ClaudeUsage.ts";
+import {
+  claudeRetryAfterMillis,
+  claudeUsagePlanLabel,
+  makeClaudeUsage,
+  mapClaudeUsageResponse,
+  parseClaudeOauthCredentials,
+} from "./ClaudeUsage.ts";
 
 describe("mapClaudeUsageResponse", () => {
   it("maps all supported windows and enabled extra usage", () => {
@@ -132,6 +146,7 @@ describe("parseClaudeOauthCredentials", () => {
           accessToken: "token",
           expiresAt: 1_700_000_000_000,
           subscriptionType: "max",
+          rateLimitTier: "default_claude_max_20x",
           scopes: ["user:profile", "other:scope"],
         },
       }),
@@ -139,6 +154,7 @@ describe("parseClaudeOauthCredentials", () => {
       accessToken: "token",
       expiresAt: 1_700_000_000_000,
       subscriptionType: "max",
+      rateLimitTier: "default_claude_max_20x",
       scopes: ["user:profile", "other:scope"],
     });
   });
@@ -157,6 +173,7 @@ describe("parseClaudeOauthCredentials", () => {
       accessToken: "token",
       expiresAt: undefined,
       subscriptionType: undefined,
+      rateLimitTier: undefined,
       scopes: undefined,
     });
     expect(
@@ -165,4 +182,166 @@ describe("parseClaudeOauthCredentials", () => {
       }),
     ).toMatchObject({ scopes: undefined });
   });
+});
+
+describe("Claude usage metadata", () => {
+  it("adds a rate-limit multiplier without duplicating one already in the plan", () => {
+    expect(claudeUsagePlanLabel("max", "default_claude_max_20x")).toBe("Max 20x");
+    expect(claudeUsagePlanLabel("claude_max_5x_subscription", "default_claude_max_5x")).toBe(
+      "Max 5x",
+    );
+    expect(claudeUsagePlanLabel("pro", undefined)).toBe("Pro");
+  });
+
+  it("parses Retry-After seconds and dates with a five-minute fallback", () => {
+    const now = Date.parse("2026-07-18T10:00:00.000Z");
+    expect(claudeRetryAfterMillis("90", now)).toBe(now + 90_000);
+    expect(claudeRetryAfterMillis("Sat, 18 Jul 2026 10:02:00 GMT", now)).toBe(now + 120_000);
+    expect(claudeRetryAfterMillis("invalid", now)).toBe(now + 5 * 60_000);
+  });
+});
+
+const makeTestClaudeUsage = Effect.fn("makeTestClaudeUsage")(function* (
+  httpClient: HttpClient.HttpClient,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const configDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-usage-" });
+  yield* fs.writeFileString(
+    path.join(configDir, ".credentials.json"),
+    '{"claudeAiOauth":{"accessToken":"test-token","subscriptionType":"pro","scopes":["user:profile"]}}',
+  );
+  return yield* makeClaudeUsage(
+    { homePath: configDir },
+    {
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      driverKind: ProviderDriverKind.make("claudeAgent"),
+      displayName: undefined,
+    },
+  ).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
+});
+
+it.layer(NodeServices.layer)("Claude usage cooldown", (it) => {
+  it.effect("serves the last good snapshot and avoids repeated requests during a 429", () =>
+    Effect.gen(function* () {
+      let requestCount = 0;
+      const httpClient = HttpClient.make((request) =>
+        Effect.sync(() => {
+          requestCount += 1;
+          const response =
+            requestCount === 1
+              ? Response.json({ five_hour: { utilization: 25 } })
+              : new Response(null, { status: 429, headers: { "retry-after": "300" } });
+          return HttpClientResponse.fromWeb(request, response);
+        }),
+      );
+      const usage = yield* makeTestClaudeUsage(httpClient);
+
+      const fresh = yield* usage.fetchUsage;
+      const throttled = yield* usage.fetchUsage;
+      const duringCooldown = yield* usage.fetchUsage;
+
+      expect(requestCount).toBe(2);
+      expect(fresh.status).toBe("ok");
+      expect(throttled).toMatchObject({
+        status: "ok",
+        windows: fresh.windows,
+        freshness: { state: "stale" },
+      });
+      expect(duringCooldown).toMatchObject({
+        status: "ok",
+        windows: fresh.windows,
+        freshness: { state: "stale" },
+      });
+      expect(throttled.freshness?.retryAt).toBe(duringCooldown.freshness?.retryAt);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("preserves a concurrent cooldown when an older successful request finishes", () =>
+    Effect.gen(function* () {
+      const firstRequestStarted = yield* Deferred.make<void>();
+      const releaseFirstResponse = yield* Deferred.make<void>();
+      let requestCount = 0;
+      const httpClient = HttpClient.make((request) =>
+        Effect.gen(function* () {
+          requestCount += 1;
+          if (requestCount === 1) {
+            yield* Deferred.succeed(firstRequestStarted, undefined);
+            yield* Deferred.await(releaseFirstResponse);
+            return HttpClientResponse.fromWeb(
+              request,
+              Response.json({ five_hour: { utilization: 25 } }),
+            );
+          }
+          return HttpClientResponse.fromWeb(
+            request,
+            new Response(null, { status: 429, headers: { "retry-after": "300" } }),
+          );
+        }),
+      );
+      const usage = yield* makeTestClaudeUsage(httpClient);
+
+      const successfulRequest = yield* usage.fetchUsage.pipe(Effect.forkScoped);
+      yield* Deferred.await(firstRequestStarted);
+      const throttled = yield* usage.fetchUsage;
+      yield* Deferred.succeed(releaseFirstResponse, undefined);
+      const fresh = yield* Fiber.join(successfulRequest);
+      const duringCooldown = yield* usage.fetchUsage;
+
+      expect(requestCount).toBe(2);
+      expect(throttled).toMatchObject({ status: "error", freshness: { state: "stale" } });
+      expect(fresh.status).toBe("ok");
+      expect(duringCooldown).toMatchObject({
+        status: "ok",
+        windows: fresh.windows,
+        freshness: { state: "stale" },
+      });
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("preserves a concurrent successful snapshot when an older request is throttled", () =>
+    Effect.gen(function* () {
+      const firstRequestStarted = yield* Deferred.make<void>();
+      const releaseFirstResponse = yield* Deferred.make<void>();
+      let requestCount = 0;
+      const httpClient = HttpClient.make((request) =>
+        Effect.gen(function* () {
+          requestCount += 1;
+          if (requestCount === 1) {
+            yield* Deferred.succeed(firstRequestStarted, undefined);
+            yield* Deferred.await(releaseFirstResponse);
+            return HttpClientResponse.fromWeb(
+              request,
+              new Response(null, { status: 429, headers: { "retry-after": "300" } }),
+            );
+          }
+          return HttpClientResponse.fromWeb(
+            request,
+            Response.json({ five_hour: { utilization: 25 } }),
+          );
+        }),
+      );
+      const usage = yield* makeTestClaudeUsage(httpClient);
+
+      const throttledRequest = yield* usage.fetchUsage.pipe(Effect.forkScoped);
+      yield* Deferred.await(firstRequestStarted);
+      const fresh = yield* usage.fetchUsage;
+      yield* Deferred.succeed(releaseFirstResponse, undefined);
+      const throttled = yield* Fiber.join(throttledRequest);
+      const duringCooldown = yield* usage.fetchUsage;
+
+      expect(requestCount).toBe(2);
+      expect(fresh.status).toBe("ok");
+      expect(throttled).toMatchObject({
+        status: "ok",
+        windows: fresh.windows,
+        freshness: { state: "stale" },
+      });
+      expect(duringCooldown).toMatchObject({
+        status: "ok",
+        windows: fresh.windows,
+        freshness: { state: "stale" },
+      });
+    }).pipe(Effect.scoped),
+  );
 });
