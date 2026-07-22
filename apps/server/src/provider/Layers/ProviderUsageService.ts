@@ -73,7 +73,10 @@ export const ProviderUsageServiceLive = Layer.effect(
         }
         const cached = (yield* Ref.get(cache)).get(instance.instanceId);
         if (cached && cached.expiresAtMillis > nowMillis) {
-          return cached.snapshot;
+          // Re-resolve the identity rather than replaying it: a snapshot
+          // cached before the provider status probe learned the account email
+          // would otherwise stay un-deduped for the rest of the TTL.
+          return yield* withAccountIdentity(instance, cached.snapshot);
         }
         const snapshot = yield* instance.usage.fetchUsage.pipe(
           Effect.flatMap((fetched) => withAccountIdentity(instance, fetched)),

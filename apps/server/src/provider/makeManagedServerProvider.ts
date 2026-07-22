@@ -33,6 +33,13 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     readonly publishSnapshot: (snapshot: ServerProvider) => Effect.Effect<void>;
   }) => Effect.Effect<void>;
   readonly refreshInterval?: Duration.Input;
+  /**
+   * Drop any memoized probe results before a refresh re-runs `checkProvider`.
+   * Without this a driver's own probe cache silently serves a stale result to
+   * an explicit user-initiated refresh — so a provider that was signed in on
+   * the machine seconds ago keeps reporting its previous auth state.
+   */
+  readonly invalidateProbes?: Effect.Effect<void>;
 }): Effect.fn.Return<ServerProviderShape, ServerSettingsError, Scope.Scope> {
   const refreshSemaphore = yield* Semaphore.make(1);
   const changesPubSub = yield* Effect.acquireRelease(
@@ -131,6 +138,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
 
   const refreshSnapshot = Effect.fn("refreshSnapshot")(function* () {
     const nextSettings = yield* input.getSettings;
+    if (input.invalidateProbes) yield* input.invalidateProbes;
     return yield* applySnapshot(nextSettings, { forceRefresh: true });
   });
 

@@ -205,6 +205,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             Effect.flatMap((enrichedSnapshot) => publishSnapshot(enrichedSnapshot)),
           ),
         refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
+        invalidateProbes: Cache.invalidate(capabilitiesProbeCache, capabilitiesCacheKey),
       }).pipe(
         Effect.mapError(
           (cause) =>
