@@ -13,6 +13,7 @@ import {
 import { CircleAlertIcon, CircleUserRoundIcon } from "lucide-react";
 
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
+import { RedactedSensitiveText } from "../settings/RedactedSensitiveText";
 import { cn } from "~/lib/utils";
 
 export type ProviderUsagePresentation = Pick<
@@ -124,7 +125,7 @@ export function ProviderUsageIdentity({
   usage: ProviderUsagePresentation;
   compact?: boolean;
 }) {
-  const subtitle = buildProviderUsageSubtitle(usage.account, usage.sourceNodes);
+  const subtitleSegments = buildProviderUsageSubtitleSegments(usage.account, usage.sourceNodes);
   return (
     <div className="flex min-w-0 items-center gap-3">
       <ProviderInstanceIcon
@@ -144,9 +145,21 @@ export function ProviderUsageIdentity({
             </span>
           ) : null}
         </div>
-        {subtitle ? (
-          <div className="truncate text-[11px] text-muted-foreground/70" title={subtitle}>
-            {subtitle}
+        {subtitleSegments.length > 0 ? (
+          <div className="flex min-w-0 flex-wrap items-center gap-1 text-[11px] text-muted-foreground/70">
+            {subtitleSegments.map((segment) =>
+              segment.kind === "text" ? (
+                <span key={segment.key}>{segment.value}</span>
+              ) : (
+                <RedactedSensitiveText
+                  key={segment.key}
+                  value={segment.value}
+                  ariaLabel={`Toggle ${segment.noun} visibility`}
+                  revealTooltip={`Click to reveal ${segment.noun}`}
+                  hideTooltip={`Click to hide ${segment.noun}`}
+                />
+              ),
+            )}
           </div>
         ) : null}
       </div>
@@ -337,13 +350,36 @@ export function ProviderUsageMeter({ usedPercent, label }: { usedPercent: number
   );
 }
 
-export function buildProviderUsageSubtitle(
+/**
+ * Identity subtitle pieces for a usage card. The account email and the source
+ * environment names are personally identifying, so they are handed back as
+ * `secret` segments the card renders behind the same click-to-reveal blur the
+ * provider list uses.
+ */
+export type ProviderUsageSubtitleSegment =
+  | { readonly kind: "text"; readonly key: string; readonly value: string }
+  | {
+      readonly kind: "secret";
+      readonly key: string;
+      readonly value: string;
+      readonly noun: string;
+    };
+
+export function buildProviderUsageSubtitleSegments(
   account: string | undefined,
   sourceNodes: ReadonlyArray<string>,
-): string | null {
-  const parts: string[] = [];
-  if (account) parts.push(account);
-  if (sourceNodes.length > 1) parts.push(`via ${sourceNodes.join(", ")}`);
-  else if (sourceNodes.length === 1) parts.push(sourceNodes[0]!);
-  return parts.length > 0 ? parts.join(" · ") : null;
+): ReadonlyArray<ProviderUsageSubtitleSegment> {
+  const segments: ProviderUsageSubtitleSegment[] = [];
+  if (account) segments.push({ kind: "secret", key: "account", value: account, noun: "account" });
+  if (sourceNodes.length > 0) {
+    if (segments.length > 0) segments.push({ kind: "text", key: "separator", value: "·" });
+    if (sourceNodes.length > 1) segments.push({ kind: "text", key: "via", value: "via" });
+    segments.push({
+      kind: "secret",
+      key: "sources",
+      value: sourceNodes.join(", "),
+      noun: "source environments",
+    });
+  }
+  return segments;
 }
