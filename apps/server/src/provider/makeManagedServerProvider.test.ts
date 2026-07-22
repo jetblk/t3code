@@ -143,6 +143,32 @@ describe("makeManagedServerProvider", () => {
       ),
   );
 
+  it.effect("invalidates driver probe caches before a refresh re-checks the provider", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const calls = yield* Ref.make<ReadonlyArray<string>>([]);
+        const record = (name: string) => Ref.update(calls, (current) => [...current, name]);
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          maintenanceCapabilities,
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: record("check").pipe(Effect.as(refreshedSnapshot)),
+          invalidateProbes: record("invalidate"),
+          refreshInterval: "1 hour",
+        });
+
+        yield* Effect.yieldNow;
+        yield* provider.refresh;
+
+        // The startup check runs without invalidation (nothing is cached yet);
+        // every refresh must drop the probe cache before re-checking.
+        assert.deepStrictEqual(yield* Ref.get(calls), ["check", "invalidate", "check"]);
+      }),
+    ),
+  );
+
   it.effect("reruns the provider check when streamed settings change", () =>
     Effect.scoped(
       Effect.gen(function* () {

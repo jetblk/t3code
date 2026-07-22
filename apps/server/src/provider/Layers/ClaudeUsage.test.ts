@@ -13,6 +13,7 @@ import {
   claudeUsagePlanLabel,
   makeClaudeUsage,
   mapClaudeUsageResponse,
+  parseClaudeAccountEmail,
   parseClaudeOauthCredentials,
 } from "./ClaudeUsage.ts";
 
@@ -138,6 +139,23 @@ describe("mapClaudeUsageResponse", () => {
   });
 });
 
+describe("parseClaudeAccountEmail", () => {
+  it("reads the OAuth account email", () => {
+    expect(
+      parseClaudeAccountEmail({
+        oauthAccount: { accountUuid: "uuid", emailAddress: "person@example.com" },
+      }),
+    ).toBe("person@example.com");
+  });
+
+  it("ignores missing, blank, and non-record accounts", () => {
+    expect(parseClaudeAccountEmail({})).toBeUndefined();
+    expect(parseClaudeAccountEmail({ oauthAccount: { accountUuid: "uuid" } })).toBeUndefined();
+    expect(parseClaudeAccountEmail({ oauthAccount: { emailAddress: "  " } })).toBeUndefined();
+    expect(parseClaudeAccountEmail("nope")).toBeUndefined();
+  });
+});
+
 describe("parseClaudeOauthCredentials", () => {
   it("parses valid Claude OAuth credentials", () => {
     expect(
@@ -203,6 +221,7 @@ describe("Claude usage metadata", () => {
 
 const makeTestClaudeUsage = Effect.fn("makeTestClaudeUsage")(function* (
   httpClient: HttpClient.HttpClient,
+  accountFile?: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -211,6 +230,9 @@ const makeTestClaudeUsage = Effect.fn("makeTestClaudeUsage")(function* (
     path.join(configDir, ".credentials.json"),
     '{"claudeAiOauth":{"accessToken":"test-token","subscriptionType":"pro","scopes":["user:profile"]}}',
   );
+  if (accountFile !== undefined) {
+    yield* fs.writeFileString(path.join(configDir, ".claude.json"), accountFile);
+  }
   return yield* makeClaudeUsage(
     { homePath: configDir },
     {
@@ -219,6 +241,49 @@ const makeTestClaudeUsage = Effect.fn("makeTestClaudeUsage")(function* (
       displayName: undefined,
     },
   ).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
+});
+
+it.layer(NodeServices.layer)("Claude usage account identity", (it) => {
+  const accountFile = '{"oauthAccount":{"emailAddress":"person@example.com"}}';
+  const okClient = HttpClient.make((request) =>
+    Effect.succeed(
+      HttpClientResponse.fromWeb(request, Response.json({ five_hour: { utilization: 25 } })),
+    ),
+  );
+
+  it.effect("reports the signed-in account from the Claude account file", () =>
+    Effect.gen(function* () {
+      const usage = yield* makeTestClaudeUsage(okClient, accountFile);
+
+      expect(yield* usage.fetchUsage).toMatchObject({
+        status: "ok",
+        account: "person@example.com",
+      });
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("omits the account when no account file is present", () =>
+    Effect.gen(function* () {
+      const usage = yield* makeTestClaudeUsage(okClient);
+
+      expect((yield* usage.fetchUsage).account).toBeUndefined();
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("omits the account on unauthenticated snapshots", () =>
+    Effect.gen(function* () {
+      const usage = yield* makeTestClaudeUsage(
+        HttpClient.make((request) =>
+          Effect.succeed(HttpClientResponse.fromWeb(request, new Response(null, { status: 401 }))),
+        ),
+        accountFile,
+      );
+
+      const snapshot = yield* usage.fetchUsage;
+      expect(snapshot.status).toBe("unauthenticated");
+      expect(snapshot.account).toBeUndefined();
+    }).pipe(Effect.scoped),
+  );
 });
 
 it.layer(NodeServices.layer)("Claude usage cooldown", (it) => {

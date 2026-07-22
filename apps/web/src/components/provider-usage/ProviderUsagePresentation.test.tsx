@@ -3,7 +3,7 @@ import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import {
-  buildProviderUsageSubtitle,
+  buildProviderUsageSubtitleSegments,
   deriveProviderUsageHeadline,
   ProviderUsageDetails,
   type ProviderUsagePresentation,
@@ -133,11 +133,20 @@ describe("deriveProviderUsageHeadline", () => {
   });
 });
 
-describe("buildProviderUsageSubtitle", () => {
-  it("combines account and source environments", () => {
-    expect(buildProviderUsageSubtitle("person@example.com", ["Local", "VPS"])).toBe(
-      "person@example.com · via Local, VPS",
-    );
+describe("buildProviderUsageSubtitleSegments", () => {
+  it("marks the account and source environments as redactable", () => {
+    expect(buildProviderUsageSubtitleSegments("person@example.com", ["Local", "VPS"])).toEqual([
+      { kind: "secret", key: "account", value: "person@example.com", noun: "account" },
+      { kind: "text", key: "separator", value: "·" },
+      { kind: "text", key: "via", value: "via" },
+      { kind: "secret", key: "sources", value: "Local, VPS", noun: "source environments" },
+    ]);
+  });
+
+  it("omits the via prefix for a single source environment", () => {
+    expect(buildProviderUsageSubtitleSegments(undefined, ["Local"])).toEqual([
+      { kind: "secret", key: "sources", value: "Local", noun: "source environments" },
+    ]);
   });
 });
 

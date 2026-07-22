@@ -103,6 +103,24 @@ function toTitleCaseWords(value: string): string {
   return parts.join(" ");
 }
 
+/**
+ * Read the signed-in account email from Claude Code's `.claude.json`.
+ *
+ * This is the cross-node dedupe identity for usage cards, and it deliberately
+ * does not depend on the provider status snapshot: that email comes from the
+ * SDK capabilities probe, which spawns the CLI and degrades to "unknown" auth
+ * whenever the spawn is slow or fails. Usage would then be reported without an
+ * account and the same subscription would render as one card per node. The
+ * account file is written by the CLI at login and is as cheap to read as the
+ * credentials file we already open.
+ */
+export function parseClaudeAccountEmail(raw: unknown): string | undefined {
+  if (!isRecord(raw)) return undefined;
+  const account = raw["oauthAccount"];
+  if (!isRecord(account)) return undefined;
+  return stringField(account, "emailAddress");
+}
+
 export function parseClaudeOauthCredentials(raw: unknown): ClaudeOauthCredentials | undefined {
   if (!isRecord(raw)) return undefined;
   const oauth = raw["claudeAiOauth"];
@@ -286,7 +304,26 @@ export const makeClaudeUsage = Effect.fn("makeClaudeUsage")(function* (
       ? resolvedHome
       : environment.CLAUDE_CONFIG_DIR?.trim() || path.join(resolvedHome, ".claude");
   const credentialsPath = path.join(configDir, ".credentials.json");
+  // `.claude.json` sits inside CLAUDE_CONFIG_DIR when one is configured, and
+  // at the home root (next to `.claude/`) in the default layout. Both are
+  // probed so instance-scoped and default installs behave the same.
+  const accountPaths = [
+    path.join(configDir, ".claude.json"),
+    path.join(resolvedHome, ".claude.json"),
+  ].filter((candidate, index, candidates) => candidates.indexOf(candidate) === index);
   const state = yield* Ref.make<ClaudeUsageState | undefined>(undefined);
+
+  const readAccountEmail = Effect.gen(function* () {
+    for (const accountPath of accountPaths) {
+      const raw = yield* fs.readFileString(accountPath).pipe(Effect.result);
+      if (Result.isFailure(raw)) continue;
+      const parsed = yield* decodeUnknownJsonString(raw.success).pipe(Effect.result);
+      if (Result.isFailure(parsed)) continue;
+      const email = parseClaudeAccountEmail(parsed.success);
+      if (email) return email;
+    }
+    return undefined;
+  });
 
   const fetchUsage = Effect.gen(function* () {
     const fetchedAt = DateTime.formatIso(yield* DateTime.now);
@@ -419,9 +456,14 @@ export const makeClaudeUsage = Effect.fn("makeClaudeUsage")(function* (
     }
 
     const { windows, credits } = mapClaudeUsageResponse(payload.success);
+    // Only `ok` snapshots carry the account: a stale `.claude.json` from a
+    // previous login would otherwise let an unauthenticated node dedupe into a
+    // healthy node's card and win the freshest-snapshot tiebreak.
+    const account = yield* readAccountEmail;
     const snapshot = {
       ...base,
       status: "ok",
+      ...(account ? { account } : {}),
       ...(planLabel ? { planLabel } : {}),
       windows,
       ...(credits ? { credits } : {}),

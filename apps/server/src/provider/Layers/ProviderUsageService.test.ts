@@ -32,6 +32,8 @@ const makeInstance = (input: {
   readonly enabled?: boolean;
   readonly displayName?: string;
   readonly accountEmail?: string;
+  /** Late-resolving auth email, for instances whose status probe lags the usage fetch. */
+  readonly resolveAccountEmail?: () => string | undefined;
   readonly usage?: ProviderUsageShape;
 }): ProviderInstance => {
   const instanceId = ProviderInstanceId.make(input.instanceId);
@@ -46,8 +48,9 @@ const makeInstance = (input: {
     displayName: input.displayName,
     enabled: input.enabled ?? true,
     snapshot: {
-      getSnapshot: Effect.succeed({
-        ...(input.accountEmail ? { auth: { email: input.accountEmail } } : {}),
+      getSnapshot: Effect.sync(() => {
+        const email = input.resolveAccountEmail?.() ?? input.accountEmail;
+        return email ? { auth: { email } } : {};
       }),
       refresh: Effect.die("not used"),
       streamChanges: Stream.empty,
@@ -157,6 +160,25 @@ describe("ProviderUsageServiceLive", () => {
       expect(okFetches).toBe(1);
       expect(errorFetches).toBe(2);
     }).pipe(Effect.provide(makeUsageLayer([successful, failing])));
+  });
+
+  it.effect("re-resolves the account identity on cached snapshots", () => {
+    let accountEmail: string | undefined;
+    const instance = makeInstance({
+      instanceId: "codex_late_auth",
+      resolveAccountEmail: () => accountEmail,
+      usage: { fetchUsage: Effect.succeed(makeUsageSnapshot("codex_late_auth")) },
+    });
+    return Effect.gen(function* () {
+      const service = yield* ProviderUsageService;
+
+      const beforeAuth = yield* service.getUsage(instance.instanceId);
+      accountEmail = "late@example.com";
+      const afterAuth = yield* service.getUsage(instance.instanceId);
+
+      expect(beforeAuth.usage[0]?.account).toBeUndefined();
+      expect(afterAuth.usage[0]?.account).toBe("late@example.com");
+    }).pipe(Effect.provide(makeUsageLayer([instance])));
   });
 
   it.effect("filters to the requested enabled instance and excludes disabled instances", () => {
