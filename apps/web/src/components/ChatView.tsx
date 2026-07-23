@@ -212,7 +212,7 @@ import { ChatHeader } from "./chat/ChatHeader";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { NoActiveThreadState } from "./NoActiveThreadState";
-import { resolveEffectiveEnvMode } from "./BranchToolbar.logic";
+import { resolveEffectiveEnvMode, resolveLocalCheckoutBranchMismatch } from "./BranchToolbar.logic";
 import { ProviderStatusBanner } from "./chat/ProviderStatusBanner";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
@@ -242,6 +242,7 @@ import {
   deriveLockedProvider,
   readFileAsDataUrl,
   reconcileMountedTerminalThreadIds,
+  resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
@@ -254,11 +255,14 @@ import { RightPanelSheet } from "./RightPanelSheet";
 import { previewEnvironment } from "../state/preview";
 import { useAtomCommand } from "../state/use-atom-command";
 import { Button } from "./ui/button";
+import { ServerUpdateAction } from "./ServerUpdateAction";
 import {
   buildVersionMismatchDismissalKey,
   dismissVersionMismatch,
   isVersionMismatchDismissed,
   resolveServerConfigVersionMismatch,
+  resolveServerSelfUpdateCapability,
+  serverUpdateGuidance,
 } from "../versionSkew";
 import { useAssetUrls } from "../assets/assetUrls";
 
@@ -1077,6 +1081,10 @@ type LocalThreadErrorEntry = {
   readonly at: number;
 };
 
+function chatActionErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "An error occurred.";
+}
+
 function ChatViewContent(props: ChatViewProps) {
   const {
     environmentId,
@@ -1104,6 +1112,7 @@ function ChatViewContent(props: ChatViewProps) {
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
+  const switchGitRef = useAtomCommand(vcsEnvironment.switchRef, { reportFailure: false });
   const setThreadRuntimeMode = useAtomCommand(threadEnvironment.setRuntimeMode, {
     reportFailure: false,
   });
@@ -1784,7 +1793,10 @@ function ChatViewContent(props: ChatViewProps) {
     hasMultipleRegisteredEnvironments && activeThread
       ? `${environmentById.get(activeThread.environmentId)?.label ?? serverConfig?.environment.label ?? activeThread.environmentId} server`
       : "server";
-  const composerBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
+  const versionMismatchEnvironmentId =
+    versionMismatch && activeThread ? activeThread.environmentId : null;
+  const versionMismatchSelfUpdate = resolveServerSelfUpdateCapability(serverConfig);
+  const systemComposerBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
     const items: ComposerBannerStackItem[] = [];
     if (activeEnvironmentUnavailableState) {
       const connection = activeEnvironmentUnavailableState.connection;
@@ -1822,7 +1834,12 @@ function ChatViewContent(props: ChatViewProps) {
         ),
       });
     }
-    if (showVersionMismatchBanner && versionMismatch && versionMismatchDismissKey) {
+    if (
+      showVersionMismatchBanner &&
+      versionMismatch &&
+      versionMismatchDismissKey &&
+      versionMismatchEnvironmentId
+    ) {
       items.push({
         id: `version-mismatch:${versionMismatchDismissKey}`,
         variant: "warning",
@@ -1831,9 +1848,21 @@ function ChatViewContent(props: ChatViewProps) {
         description: (
           <>
             Client {versionMismatch.clientVersion} is connected to {versionMismatchServerLabel}{" "}
-            {versionMismatch.serverVersion}. Sync them if RPC calls or reconnects fail.
+            {versionMismatch.serverVersion}.{" "}
+            {serverUpdateGuidance(versionMismatchSelfUpdate, versionMismatchServerLabel)}
           </>
         ),
+        // The desktop-managed guidance is already the description; the action
+        // slot would only repeat it.
+        actions:
+          versionMismatchSelfUpdate === "desktop-managed" ? undefined : (
+            <ServerUpdateAction
+              environmentId={versionMismatchEnvironmentId}
+              serverLabel={versionMismatchServerLabel}
+              selfUpdate={versionMismatchSelfUpdate}
+              targetVersion={versionMismatch.clientVersion}
+            />
+          ),
         dismissLabel: "Dismiss version mismatch warning",
         onDismiss: () => {
           dismissVersionMismatch(versionMismatchDismissKey);
@@ -1846,9 +1875,12 @@ function ChatViewContent(props: ChatViewProps) {
     activeEnvironmentUnavailableState,
     handleReconnectActiveEnvironment,
     navigate,
+    setDismissedVersionMismatchKey,
     showVersionMismatchBanner,
     versionMismatch,
     versionMismatchDismissKey,
+    versionMismatchEnvironmentId,
+    versionMismatchSelfUpdate,
     versionMismatchServerLabel,
   ]);
   const providerStatuses = serverConfig?.providers ?? EMPTY_PROVIDERS;
@@ -3224,6 +3256,7 @@ function ChatViewContent(props: ChatViewProps) {
       threadId: ThreadId;
       createdAt: string;
       modelSelection?: ModelSelection;
+      branch?: string;
       runtimeMode: RuntimeMode;
       interactionMode: ProviderInteractionMode;
     }): Promise<AtomCommandResult<void, unknown>> => {
@@ -3232,19 +3265,19 @@ function ChatViewContent(props: ChatViewProps) {
       }
 
       let result: AtomCommandResult<void, unknown> = AsyncResult.success(undefined);
-      if (
-        input.modelSelection !== undefined &&
-        (input.modelSelection.model !== serverThread.modelSelection.model ||
-          input.modelSelection.instanceId !== serverThread.modelSelection.instanceId ||
-          JSON.stringify(input.modelSelection.options ?? null) !==
-            JSON.stringify(serverThread.modelSelection.options ?? null))
-      ) {
+      const metadataUpdate = resolveThreadMetadataUpdateForNextTurn({
+        currentModelSelection: serverThread.modelSelection,
+        ...(input.modelSelection ? { nextModelSelection: input.modelSelection } : {}),
+        currentBranch: serverThread.branch,
+        ...(input.branch ? { nextBranch: input.branch } : {}),
+      });
+      if (metadataUpdate) {
         result = mapAtomCommandResult(
           await updateThreadMetadata({
             environmentId,
             input: {
               threadId: input.threadId,
-              modelSelection: input.modelSelection,
+              ...metadataUpdate,
             },
           }),
           () => undefined,
@@ -3738,6 +3771,179 @@ function ChatViewContent(props: ChatViewProps) {
     requestedEnvMode: envMode,
     isGitRepo,
   });
+  const localCheckoutBranchMismatch = useMemo(
+    () =>
+      isServerThread
+        ? resolveLocalCheckoutBranchMismatch({
+            effectiveEnvMode: envMode,
+            activeWorktreePath,
+            activeThreadBranch,
+            currentGitBranch: gitStatusQuery.data?.refName ?? null,
+          })
+        : null,
+    [activeThreadBranch, activeWorktreePath, envMode, gitStatusQuery.data?.refName, isServerThread],
+  );
+  const [branchRepairAction, setBranchRepairAction] = useState<
+    "update-thread" | "switch-checkout" | null
+  >(null);
+  const handleUpdateThreadToCheckout = useCallback(async () => {
+    if (!activeThread || !localCheckoutBranchMismatch || branchRepairAction !== null) {
+      return;
+    }
+    setBranchRepairAction("update-thread");
+    const updateResult = await updateThreadMetadata({
+      environmentId,
+      input: {
+        threadId: activeThread.id,
+        branch: localCheckoutBranchMismatch.currentBranch,
+        worktreePath: null,
+      },
+    });
+    setBranchRepairAction(null);
+    if (updateResult._tag === "Failure" && !isAtomCommandInterrupted(updateResult)) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Failed to update thread branch",
+          description: chatActionErrorMessage(squashAtomCommandFailure(updateResult)),
+        }),
+      );
+      return;
+    }
+    scheduleComposerFocus();
+  }, [
+    activeThread,
+    branchRepairAction,
+    environmentId,
+    localCheckoutBranchMismatch,
+    scheduleComposerFocus,
+    updateThreadMetadata,
+  ]);
+  const handleSwitchCheckoutToThread = useCallback(async () => {
+    if (
+      !activeProjectCwd ||
+      !activeThread ||
+      !localCheckoutBranchMismatch ||
+      branchRepairAction !== null
+    ) {
+      return;
+    }
+    setBranchRepairAction("switch-checkout");
+    const checkoutResult = await switchGitRef({
+      environmentId,
+      input: {
+        cwd: activeProjectCwd,
+        refName: localCheckoutBranchMismatch.threadBranch,
+      },
+    });
+    if (checkoutResult._tag === "Failure") {
+      setBranchRepairAction(null);
+      if (!isAtomCommandInterrupted(checkoutResult)) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Failed to switch checkout",
+            description: chatActionErrorMessage(squashAtomCommandFailure(checkoutResult)),
+          }),
+        );
+      }
+      return;
+    }
+
+    const nextBranch = checkoutResult.value.refName ?? localCheckoutBranchMismatch.threadBranch;
+    if (nextBranch !== activeThread.branch) {
+      const updateResult = await updateThreadMetadata({
+        environmentId,
+        input: { threadId: activeThread.id, branch: nextBranch, worktreePath: null },
+      });
+      if (updateResult._tag === "Failure") {
+        setBranchRepairAction(null);
+        if (!isAtomCommandInterrupted(updateResult)) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Checkout switched, but the thread could not be updated",
+              description: chatActionErrorMessage(squashAtomCommandFailure(updateResult)),
+            }),
+          );
+        }
+        gitStatusQuery.refresh();
+        return;
+      }
+    }
+    gitStatusQuery.refresh();
+    setBranchRepairAction(null);
+    scheduleComposerFocus();
+  }, [
+    activeProjectCwd,
+    activeThread,
+    branchRepairAction,
+    environmentId,
+    gitStatusQuery,
+    localCheckoutBranchMismatch,
+    scheduleComposerFocus,
+    switchGitRef,
+    updateThreadMetadata,
+  ]);
+  const composerBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
+    if (!localCheckoutBranchMismatch) {
+      return systemComposerBannerItems;
+    }
+    const isRepairingBranch = branchRepairAction !== null;
+    return [
+      ...systemComposerBannerItems,
+      {
+        id: `branch-mismatch:${activeThread?.id ?? "unknown"}:${localCheckoutBranchMismatch.threadBranch}:${localCheckoutBranchMismatch.currentBranch}`,
+        variant: "warning",
+        icon: <TriangleAlertIcon />,
+        title: "You're on a different branch",
+        className:
+          "text-base sm:text-sm [&>div]:items-start max-sm:[&>div]:flex-wrap max-sm:[&>div>div:last-child]:w-full max-sm:[&>div>div:last-child]:self-start dark:shadow-none",
+        actionClassName:
+          "max-sm:w-full max-sm:border-t max-sm:border-border/60 max-sm:pt-2 max-sm:pl-6 sm:border-l sm:border-border/60 sm:pl-3",
+        description: (
+          <p className="text-pretty">
+            This thread is on{" "}
+            <code className="font-medium text-foreground">
+              {localCheckoutBranchMismatch.threadBranch}
+            </code>
+            , but you're currently checked out at{" "}
+            <code className="font-medium text-foreground">
+              {localCheckoutBranchMismatch.currentBranch}
+            </code>
+            . Sending a message will update the thread.
+          </p>
+        ),
+        actions: (
+          <>
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={isRepairingBranch}
+              onClick={() => void handleUpdateThreadToCheckout()}
+            >
+              {branchRepairAction === "update-thread" ? "Moving..." : "Move thread here"}
+            </Button>
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={isRepairingBranch}
+              onClick={() => void handleSwitchCheckoutToThread()}
+            >
+              {branchRepairAction === "switch-checkout" ? "Switching..." : "Checkout thread branch"}
+            </Button>
+          </>
+        ),
+      },
+    ];
+  }, [
+    activeThread?.id,
+    branchRepairAction,
+    handleSwitchCheckoutToThread,
+    handleUpdateThreadToCheckout,
+    localCheckoutBranchMismatch,
+    systemComposerBannerItems,
+  ]);
 
   useEffect(() => {
     setPendingServerThreadEnvMode(null);
@@ -4287,6 +4493,9 @@ function ChatViewContent(props: ChatViewProps) {
         threadId: threadIdForSend,
         createdAt: messageCreatedAt,
         ...(ctxSelectedModel ? { modelSelection: ctxSelectedModelSelection } : {}),
+        ...(localCheckoutBranchMismatch
+          ? { branch: localCheckoutBranchMismatch.currentBranch }
+          : {}),
         runtimeMode,
         interactionMode,
       });
@@ -4668,6 +4877,9 @@ function ChatViewContent(props: ChatViewProps) {
         threadId: threadIdForSend,
         createdAt: messageCreatedAt,
         modelSelection: ctxSelectedModelSelection,
+        ...(localCheckoutBranchMismatch
+          ? { branch: localCheckoutBranchMismatch.currentBranch }
+          : {}),
         runtimeMode,
         interactionMode: nextInteractionMode,
       });
@@ -4744,6 +4956,7 @@ function ChatViewContent(props: ChatViewProps) {
       isConnecting,
       isSendBusy,
       isServerThread,
+      localCheckoutBranchMismatch,
       persistThreadSettingsForNextTurn,
       resetLocalDispatch,
       runtimeMode,
@@ -5444,6 +5657,7 @@ function ChatViewContent(props: ChatViewProps) {
                       )}
                     >
                       <div
+                        data-terminal-open={terminalUiState.terminalOpen ? "true" : undefined}
                         className={cn(
                           "chat-composer-lower-chrome relative z-10",
                           isGitRepo
