@@ -1,4 +1,8 @@
-const NIGHTLY_SERVER_VERSION_PATTERN = /-nightly\.\d{8}\.\d+$/;
+// `jetblk` is this fork's release channel (`0.0.28-jetblk.<date>.<run>`, stamped by
+// .github/workflows/nightly-fork.yml). It tracks upstream's nightly cadence, so it gets
+// upstream's nightly treatment: the "Nightly" stage label, sidebar night-sky backdrop,
+// and composer button art.
+const NIGHTLY_SERVER_VERSION_PATTERN = /-(?:nightly|jetblk)\.\d{8}\.\d+$/;
 
 export function formatAppDisplayName(input: {
   readonly baseName: string;

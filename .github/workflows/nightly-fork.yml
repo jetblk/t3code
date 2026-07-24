@@ -194,6 +194,13 @@ jobs:
           cp -r apps/web/dist apps/server/dist/client
           test -f apps/server/dist/client/index.html
 
+      # dist/client carries the *production* favicons from apps/web/public.
+      # Fork versions ride upstream's nightly channel (see branding.logic.ts), so
+      # stamp the nightly icons over them — the same override cli.ts `publish`
+      # applies upstream, which the step above deliberately skips.
+      - name: Apply nightly web icons
+        run: node scripts/apply-web-brand-assets.ts nightly apps/server/dist/client
+
       - name: Package self-contained bundle
         shell: bash
         run: |

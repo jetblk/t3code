@@ -81,6 +81,15 @@ describe("branding logic", () => {
     ).toBe("Nightly");
   });
 
+  it("returns Nightly for jetblk fork primary server versions", () => {
+    expect(
+      resolveServerBackedAppStageLabel({
+        primaryServerVersion: "0.0.28-jetblk.20260724.5",
+        fallbackStageLabel: "Alpha",
+      }),
+    ).toBe("Nightly");
+  });
+
   it("updates the display name for nightly primary server versions", () => {
     expect(
       resolveServerBackedAppDisplayName({
